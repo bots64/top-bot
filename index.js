@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 
 const client = new Client({
     intents: [
@@ -11,17 +11,18 @@ const client = new Client({
 
 const TXT_CHANNEL_ID = '1543093337165144084';
 const VC_CHANNEL_ID = '1543093370065260564';
+const ANON_CHANNEL_ID = '1543113579962835054';
 
-// قواعد البيانات
 const db = {
     messages: new Map(),
     words: new Map(),
     voiceMinutes: new Map()
 };
 
-client.once('ready', () => {
+client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
-    startLeaderboardLoops();
+    await updateLeaderboards();
+    setInterval(updateLeaderboards, 30000);
 });
 
 // تتبع الكلمات والرسائل
@@ -37,9 +38,8 @@ client.on('messageCreate', message => {
     handleAnonymousMessage(message);
 });
 
-// تتبع تواجد الفويس وحساب النقاط (10 نقاط لكل دقيقة)
+// تتبع الفويس وحساب النقاط (10 نقاط لكل دقيقة)
 client.on('voiceStateUpdate', (oldState, newState) => {
-    // منطق تتبع الفويس البسيط
     if (!oldState.channelId && newState.channelId) {
         newState.member.voiceJoinTime = Date.now();
     } else if (oldState.channelId && !newState.channelId && oldState.member.voiceJoinTime) {
@@ -50,14 +50,11 @@ client.on('voiceStateUpdate', (oldState, newState) => {
     }
 });
 
-// حلقات التحديث التلقائي كل 30 ثانية لكل من اللوحتين
-function startLeaderboardLoops() {
-    // توب الكلمات
-    setInterval(async () => {
-        try {
-            const channel = await client.channels.fetch(TXT_CHANNEL_ID);
-            if (!channel) return;
-
+async function updateLeaderboards() {
+    try {
+        // 1. تحديث توب الكلمات
+        const txtChannel = await client.channels.fetch(TXT_CHANNEL_ID).catch(() => null);
+        if (txtChannel) {
             const embed = new EmbedBuilder()
                 .setTitle('Top Messages')
                 .setColor('#1e1f22')
@@ -69,37 +66,55 @@ function startLeaderboardLoops() {
                 new ButtonBuilder().setCustomId('anonymous_msg_btn').setLabel('رسالة من مجهول').setStyle(ButtonStyle.Secondary)
             );
 
-            const messages = await channel.messages.fetch({ limit: 5 });
-            const botMessage = messages.find(m => m.author.id === client.user.id);
-            if (botMessage) await botMessage.delete().catch(() => {});
-
-            await channel.send({ embeds: [embed], components: [row] });
-        } catch (err) {
-            console.error('Error updating txt leaderboard:', err);
+            const messages = await txtChannel.messages.fetch({ limit: 10 }).catch(() => null);
+            if (messages) {
+                const botMessage = messages.find(m => m.author.id === client.user.id);
+                if (botMessage) await botMessage.delete().catch(() => {});
+            }
+            await txtChannel.send({ embeds: [embed], components: [row] });
         }
-    }, 30000);
 
-    // توب الفويس
-    setInterval(async () => {
-        try {
-            const channel = await client.channels.fetch(VC_CHANNEL_ID);
-            if (!channel) return;
-
+        // 2. تحديث توب الفويس
+        const vcChannel = await client.channels.fetch(VC_CHANNEL_ID).catch(() => null);
+        if (vcChannel) {
             const embed = new EmbedBuilder()
                 .setTitle('Top Voice')
                 .setColor('#1e1f22')
                 .setDescription(getTopVoiceText())
                 .setFooter({ text: 'Updated 30 seconds ago' });
 
-            const messages = await channel.messages.fetch({ limit: 5 });
-            const botMessage = messages.find(m => m.author.id === client.user.id);
-            if (botMessage) await botMessage.delete().catch(() => {});
-
-            await channel.send({ embeds: [embed] });
-        } catch (err) {
-            console.error('Error updating vc leaderboard:', err);
+            const messages = await vcChannel.messages.fetch({ limit: 10 }).catch(() => null);
+            if (messages) {
+                const botMessage = messages.find(m => m.author.id === client.user.id);
+                if (botMessage) await botMessage.delete().catch(() => {});
+            }
+            await vcChannel.send({ embeds: [embed] });
         }
-    }, 30000);
+
+        // 3. إرسال رسالة "رسالة من مجهول" في القناة المخصصة
+        const anonChannel = await client.channels.fetch(ANON_CHANNEL_ID).catch(() => null);
+        if (anonChannel) {
+            const messages = await anonChannel.messages.fetch({ limit: 5 }).catch(() => null);
+            const botMessage = messages ? messages.find(m => m.author.id === client.user.id) : null;
+            
+            if (!botMessage) {
+                const embed = new EmbedBuilder()
+                    .setColor('#1e1f22')
+                    .setDescription('أرسل الرسالة وتطمئن، كل شيء بسرية تامة.');
+
+                const row1 = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('anonymous_msg_btn').setLabel('رسالة من مجهول').setStyle(ButtonStyle.Secondary)
+                );
+                const row2 = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('anonymous_msg_btn').setLabel('رسالة من مجهول').setStyle(ButtonStyle.Secondary)
+                );
+
+                await anonChannel.send({ embeds: [embed], components: [row1, row2] });
+            }
+        }
+    } catch (err) {
+        console.error('Error in updateLeaderboards:', err);
+    }
 }
 
 function getTopMessagesText() {
@@ -114,7 +129,6 @@ function getTopVoiceText() {
     return sorted.map((item, index) => `${index + 1}. <@${item[0]}> ⎯ ${item[1] * 10}`).join('\n');
 }
 
-// التفاعل مع الأزرار
 client.on('interactionCreate', async interaction => {
     if (!interaction.isButton()) return;
 
@@ -137,17 +151,16 @@ client.on('interactionCreate', async interaction => {
 
     if (interaction.customId === 'anonymous_msg_btn') {
         const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('start_anon_flow').setLabel('رسالة من مجهول').setStyle(ButtonStyle.Secondary)
+            new ButtonBuilder().setCustomId('start_anon_flow').setLabel('ابدأ كتابة الرسالة').setStyle(ButtonStyle.Secondary)
         );
-        await interaction.reply({ content: 'أرسل الرسالة وتطمئن، كل شيء بسرية تامّة.', components: [row], ephemeral: true });
+        await interaction.reply({ content: 'يرجى الاختيار للإفصاح عن الهوية أو لا عبر الضغط بالأسفل:', components: [row], ephemeral: true });
     }
 
     if (interaction.customId === 'start_anon_flow') {
-        await interaction.update({ content: 'يرجى كتابة رسالتك الآن متضمنة منشن الشخص المراد (مع نص إضافي).', components: [] });
+        await interaction.update({ content: 'ارفق الرسالة مع المنشن الآن في الشات.', components: [] });
     }
 });
 
-// معالجة الرسالة السرية ومنشن الشخص
 async function handleAnonymousMessage(message) {
     if (message.mentions.users.size > 0 && message.content.length > 3) {
         const targetUser = message.mentions.users.first();
@@ -161,12 +174,12 @@ async function handleAnonymousMessage(message) {
         );
 
         const sentMsg = await message.channel.send({
-            content: `يرجى الاختيار للإفصاح عن الهوية أو لا لـ <@${targetUser.id}>:`,
+            content: `يرجى الاختيار للإفصاح عن الهوية لـ <@${targetUser.id}>:`,
             components: [confirmRow]
         });
 
         const filter = i => i.customId.startsWith('anon_');
-        const collector = sentMsg.createMessageComponentCollector({ filter, time: 5000 });
+        const collector = sentMsg.createMessageComponentCollector({ filter, time: 15000 });
 
         collector.on('collect', async i => {
             const parts = i.customId.split('_');
@@ -180,7 +193,7 @@ async function handleAnonymousMessage(message) {
             if (targetUserObj) {
                 await targetUserObj.send(`**عندك رسالة من مجهول**\n\n**${message.content}**\n\n${senderTag}`).catch(() => {});
             }
-            await i.update({ content: 'تم إرسال الرسالة بنجاح.', components: [] });
+            await i.update({ content: `تم إرسال الرسالة إلى <@${targetId}> بنجاح.`, components: [] });
             setTimeout(() => sentMsg.delete().catch(() => {}), 2000);
         });
 
