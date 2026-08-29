@@ -19,7 +19,8 @@ const db = {
     words: new Map(),          
     voiceMinutes: new Map(),   
     dailyMessages: new Map(),  
-    dailyVoice: new Map()      
+    dailyVoice: new Map(),
+    cooldowns: new Map()       // تخزين وقت آخر استخدام لكل مستخدم لنظام الـ 5 دقائق
 };
 
 client.once('ready', async () => {
@@ -58,7 +59,7 @@ client.on('voiceStateUpdate', (oldState, newState) => {
 
 async function updateLeaderboards() {
     try {
-        // 1. تحديث توب الكلمات (يحتوي على زر My Stats فقط بدون زر رسالة من مجهول)
+        // 1. تحديث توب الكلمات (يحتوي على زر My Stats فقط)
         const txtChannel = await client.channels.fetch(TXT_CHANNEL_ID).catch(() => null);
         if (txtChannel) {
             const embed = new EmbedBuilder()
@@ -126,7 +127,7 @@ function getTopMessagesText() {
 }
 
 function getTopVoiceText() {
-    const sorted = [...db.voiceMinutes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+    const sorted = [...db.voiceMinutes.entries()].sort((a, b) => b[1] - b[1]).slice(0, 10);
     if (sorted.length === 0) return 'لا توجد بيانات كافية بعد.';
     return sorted.map((item, index) => `${index + 1}. <@${item[0]}> ⎯ ${item[1] * 10}`).join('\n');
 }
@@ -161,11 +162,25 @@ client.on('interactionCreate', async interaction => {
             await interaction.editReply({ embeds: [embed] });
         }
 
-        // عند الضغط على زر رسالة من مجهول الأساسي -> يرسل الزرين فقط بدون أي نص فوقهم
+        // عند الضغط على زر رسالة من مجهول -> التحقق من الكولداون (5 دقائق)
         if (interaction.customId === 'anonymous_msg_btn') {
+            const userId = interaction.user.id;
+            const now = Date.now();
+            const cooldownTime = 5 * 60 * 1000; // 5 دقائق بالميلي ثانية
+            const lastTime = db.cooldowns.get(userId) || 0;
+
+            if (now - lastTime < cooldownTime) {
+                const expirationTimestamp = Math.floor((lastTime + cooldownTime) / 1000);
+                await interaction.reply({
+                    content: `لازم تنتظر <t:${expirationTimestamp}:R>**`,
+                    ephemeral: true
+                });
+                return;
+            }
+
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('reveal_identity').setLabel('كشف الهوية').setStyle(ButtonStyle.Success),
-                new ButtonBuilder().setCustomId('hide_identity').setLabel('إخفاء الهوية').setStyle(ButtonStyle.Danger)
+                new ButtonBuilder().setCustomId('reveal_identity').setLabel('كشف الهوية').setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder().setCustomId('hide_identity').setLabel('إخفاء الهوية').setStyle(ButtonStyle.Secondary)
             );
 
             await interaction.reply({
@@ -176,45 +191,59 @@ client.on('interactionCreate', async interaction => {
 
         // عند اختيار كشف أو إخفاء الهوية
         if (interaction.customId === 'reveal_identity' || interaction.customId === 'hide_identity') {
+            const userId = interaction.user.id;
+            // تحديث وقت الكولداون فور اختيار نوع الإرسال
+            db.cooldowns.set(userId, Date.now());
+
             const isReveal = interaction.customId === 'reveal_identity';
 
             await interaction.update({
-                content: 'اكتب رسالتك مع المنشن فقطط',
+                content: 'اكتب رسالتك مع المنشن',
                 components: [],
                 ephemeral: true
             });
 
-            // انتظار رسالة المستخدم التالية في نفس الشات
-            const filter = m => m.author.id === interaction.user.id;
+            // فتح المجال (فك الشات) لاستلام رسالة واحدة فقط ثم إغلاقها فوراً
+            const filter = m => m.author.id === userId;
             const collector = interaction.channel.createMessageCollector({ filter, max: 1, time: 60000 });
 
             collector.on('collect', async m => {
                 try {
-                    await m.delete().catch(() => {}); // حذف رسالة الشخص بأقل من ثانية
+                    await m.delete().catch(() => {}); // حذف رسالة المستخدم فوراً وقفل الشات عنه
                 } catch (err) {}
 
                 const targetUser = m.mentions.users.first();
 
-                // إذا لم يوجد منشن أو قام بمنشن نفسه
-                if (!targetUser || targetUser.id === interaction.user.id) {
+                // إذا لم يوجد منشن أو قام بمنشن نفسه أو الشخص غير موجود بالسيرفر
+                if (!targetUser || targetUser.id === userId) {
                     await interaction.followUp({
-                        content: 'المنشن غلط',
+                        content: 'ما في منشن',
+                        ephemeral: true
+                    });
+                    return;
+                }
+
+                // التحقق مما إذا كان الشخص موجوداً في السيرفر فعلياً
+                const member = await m.guild.members.fetch(targetUser.id).catch(() => null);
+                if (!member) {
+                    await interaction.followUp({
+                        content: 'ما في منشن',
                         ephemeral: true
                     });
                     return;
                 }
 
                 const content = m.content;
-                const senderName = isReveal ? `<@${interaction.user.id}>` : 'مجهول الهويه';
+                const senderDisplay = isReveal ? `<@${userId}>` : 'مجهول الهويه';
 
                 // إرسال الرسالة للخاص للشخص المُمنشن بالشكل المطلوب
                 try {
-                    await targetUser.send(`عندك رسالة من مجهول\nالرسالة : ${content}\nالراسل : ${senderName}`);
+                    await targetUser.send(`عندك رسالة من مجهول\nالرسالة : ${content}\nالراسل : ${senderDisplay}`);
                 } catch (err) {
                     console.log('Could not send DM.');
                 }
 
-                // تأكيد الإرسال للمرسل بالرسالة الزرقاء السرية
+                // إشعار المرسل بنجاح الإرسال وإغلاق الشات عليه
                 await interaction.followUp({
                     content: `تم ارسال الرساله الى <@${targetUser.id}>`,
                     ephemeral: true
