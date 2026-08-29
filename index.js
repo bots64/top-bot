@@ -132,15 +132,6 @@ function getTopVoiceText() {
     return sorted.map((item, index) => `${index + 1}. <@${item[0]}> ⎯ ${item[1] * 10}`).join('\n');
 }
 
-function formatTime(totalMins) {
-    const hours = Math.floor(totalMins / 60);
-    const mins = totalMins % 60;
-    if (hours > 0) {
-        return `${hours}h ${mins}m`;
-    }
-    return `${mins}m`;
-}
-
 // معالجة الأزرار
 client.on('interactionCreate', async interaction => {
     if (interaction.isButton()) {
@@ -211,10 +202,9 @@ client.on('interactionCreate', async interaction => {
                     await m.delete().catch(() => {}); // حذف رسالة المستخدم فوراً
                 } catch (err) {}
 
-                // جلب جميع الأشخاص المنشنين في الرسالة
+                // جلب جميع الأشخاص المنشنين
                 const mentionedUsers = m.mentions.users;
 
-                // إذا لم يتم منشن أي شخص نهائياً في النص
                 if (mentionedUsers.size === 0) {
                     await interaction.followUp({
                         content: 'ما في منشن',
@@ -223,17 +213,25 @@ client.on('interactionCreate', async interaction => {
                     return;
                 }
 
-                const content = m.content;
-                const senderDisplay = isReveal ? `<@${userId}>` : 'مجهول الهويه';
+                // تنظيف نص الرسالة: إزالة المنشنات لكي لا تظهر كروابط زرقاء مزعجة تحت كلمة "الرسالة :"
+                let cleanContent = m.content;
+                mentionedUsers.forEach(user => {
+                    cleanContent = cleanContent.replace(new RegExp(`<@!?${user.id}>`, 'g'), '').trim();
+                });
+
+                // تحديد شكل اسم الراسل في الأسفل (بدون منشن تفاعلي أزرق، أو اسم صريح إذا كان كشف هوية)
+                const senderMember = await m.guild.members.fetch(userId).catch(() => null);
+                const senderName = senderMember ? senderMember.user.tag : 'مستخدم';
+                const senderDisplay = isReveal ? senderName : 'مجهول الهويه';
 
                 const sentTags = [];
 
-                // إرسال الرسالة بالخاص لجميع المنشنين بدون إعطاء المنشن خصائص تفاعلية زرقاء داخل جملة "الرسالة :"
+                // إرسال الرسالة بالخاص لجميع المنشنين بالشكل المطلوب تماماً
                 for (const [targetId, userObj] of mentionedUsers) {
                     if (userObj.bot) continue;
 
                     try {
-                        await userObj.send(`عندك رسالة من مجهول\nالرسالة : ${content}\nالراسل : ${senderDisplay}`);
+                        await userObj.send(`عندك رسالة من مجهول\nالرسالة : ${cleanContent}\nالراسل : ${senderDisplay}`);
                         sentTags.push(`<@${targetId}>`);
                     } catch (err) {
                         console.log(`Could not send DM to ${userObj.tag}`);
