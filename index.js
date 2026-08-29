@@ -1,5 +1,4 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder, ChannelType } = require('discord.js');
-const Canvas = class CanvasMock {}; // يمكن استبدالها بمكتبة canvas الفعلية حسب رغبتك
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType } = require('discord.js');
 
 const client = new Client({
     intents: [
@@ -10,16 +9,14 @@ const client = new Client({
     ]
 });
 
-// تعبئة اIDs الخاصة بالرووم والأقسام
-const TXT_CHANNEL_ID = '1543093370065260564'; // روم توب الرسائل
-const VC_CHANNEL_ID = 'REPLACE_WITH_VC_CHANNEL_ID'; // روم توب الفويس
+const TXT_CHANNEL_ID = '1543093337165144084';
+const VC_CHANNEL_ID = '1543093370065260564';
 
-// قواعد بيانات وهمية لتخزين الرسائل، الكلمات، وأوقات الفويس
+// قواعد البيانات
 const db = {
-    messages: new Map(), // userId -> count
-    words: new Map(),    // userId -> total words
-    voiceTime: new Map(), // userId -> milliseconds
-    voiceRooms: new Map() // userId -> Map(roomName -> time)
+    messages: new Map(),
+    words: new Map(),
+    voiceMinutes: new Map()
 };
 
 client.once('ready', () => {
@@ -27,7 +24,7 @@ client.once('ready', () => {
     startLeaderboardLoops();
 });
 
-// تتبع الرسائل والكلمات
+// تتبع الكلمات والرسائل
 client.on('messageCreate', message => {
     if (message.author.bot) return;
     
@@ -37,13 +34,25 @@ client.on('messageCreate', message => {
     db.messages.set(userId, (db.messages.get(userId) || 0) + 1);
     db.words.set(userId, (db.words.get(userId) || 0) + wordCount);
 
-    // نظام الرسالة من مجهول والتحقق من المنشن
     handleAnonymousMessage(message);
+});
+
+// تتبع تواجد الفويس وحساب النقاط (10 نقاط لكل دقيقة)
+client.on('voiceStateUpdate', (oldState, newState) => {
+    // منطق تتبع الفويس البسيط
+    if (!oldState.channelId && newState.channelId) {
+        newState.member.voiceJoinTime = Date.now();
+    } else if (oldState.channelId && !newState.channelId && oldState.member.voiceJoinTime) {
+        const durationMins = Math.floor((Date.now() - oldState.member.voiceJoinTime) / 60000);
+        const userId = oldState.member.id;
+        const currentMins = db.voiceMinutes.get(userId) || 0;
+        db.voiceMinutes.set(userId, currentMins + durationMins);
+    }
 });
 
 // حلقات التحديث التلقائي كل 30 ثانية لكل من اللوحتين
 function startLeaderboardLoops() {
-    // تحديث توب الرسائل
+    // توب الكلمات
     setInterval(async () => {
         try {
             const channel = await client.channels.fetch(TXT_CHANNEL_ID);
@@ -69,15 +78,43 @@ function startLeaderboardLoops() {
             console.error('Error updating txt leaderboard:', err);
         }
     }, 30000);
+
+    // توب الفويس
+    setInterval(async () => {
+        try {
+            const channel = await client.channels.fetch(VC_CHANNEL_ID);
+            if (!channel) return;
+
+            const embed = new EmbedBuilder()
+                .setTitle('Top Voice')
+                .setColor('#1e1f22')
+                .setDescription(getTopVoiceText())
+                .setFooter({ text: 'Updated 30 seconds ago' });
+
+            const messages = await channel.messages.fetch({ limit: 5 });
+            const botMessage = messages.find(m => m.author.id === client.user.id);
+            if (botMessage) await botMessage.delete().catch(() => {});
+
+            await channel.send({ embeds: [embed] });
+        } catch (err) {
+            console.error('Error updating vc leaderboard:', err);
+        }
+    }, 30000);
 }
 
 function getTopMessagesText() {
     const sorted = [...db.words.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
     if (sorted.length === 0) return 'لا توجد بيانات كافية بعد.';
-    return sorted.map((item, index) => `${index + 1}. <@${item[0]}> — ${item[1]} words`).join('\n');
+    return sorted.map((item, index) => `${index + 1}. <@${item[0]}> ⎯ ${item[1]}`).join('\n');
 }
 
-// التفاعل مع الأزرار (My Stats & Anonymous Message)
+function getTopVoiceText() {
+    const sorted = [...db.voiceMinutes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+    if (sorted.length === 0) return 'لا توجد بيانات كافية بعد.';
+    return sorted.map((item, index) => `${index + 1}. <@${item[0]}> ⎯ ${item[1] * 10}`).join('\n');
+}
+
+// التفاعل مع الأزرار
 client.on('interactionCreate', async interaction => {
     if (!interaction.isButton()) return;
 
@@ -99,17 +136,20 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (interaction.customId === 'anonymous_msg_btn') {
-        await interaction.reply({ 
-            content: 'اكتب رسالتك للمجهول وكل شيء بسرية تامة. قم بكتابة رسالتك مع منشن الشخص المطلوبة ولا تنسَ كتابة نص مع المنشن.', 
-            ephemeral: true 
-        });
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('start_anon_flow').setLabel('رسالة من مجهول').setStyle(ButtonStyle.Secondary)
+        );
+        await interaction.reply({ content: 'أرسل الرسالة وتطمئن، كل شيء بسرية تامّة.', components: [row], ephemeral: true });
+    }
+
+    if (interaction.customId === 'start_anon_flow') {
+        await interaction.update({ content: 'يرجى كتابة رسالتك الآن متضمنة منشن الشخص المراد (مع نص إضافي).', components: [] });
     }
 });
 
 // معالجة الرسالة السرية ومنشن الشخص
 async function handleAnonymousMessage(message) {
-    if (message.mentions.users.size > 0 && message.content.length > 5) {
-        // التحقق من وجود نص مع المنشن وليس منشنًا بمفرده
+    if (message.mentions.users.size > 0 && message.content.length > 3) {
         const targetUser = message.mentions.users.first();
         if (targetUser.id === message.author.id) return;
 
@@ -117,39 +157,31 @@ async function handleAnonymousMessage(message) {
 
         const confirmRow = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId(`anon_reveal_${targetUser.id}_${message.author.id}`).setLabel('إفصاح عن الهوية').setStyle(ButtonStyle.Primary),
-            new ButtonBuilder().setCustomId(`anon_secret_${targetUser.id}`).setLabel('هوية سرية').setStyle(ButtonStyle.Secondary)
+            new ButtonBuilder().setCustomId(`anon_secret_${targetUser.id}_${message.author.id}`).setLabel('مجهول الهوية').setStyle(ButtonStyle.Secondary)
         );
 
         const sentMsg = await message.channel.send({
-            content: `لديك رسالة من مجهول مرسلة إلى <@${targetUser.id}>. اختر نوع الإفصاح (خلال 5 ثوانٍ):`,
+            content: `يرجى الاختيار للإفصاح عن الهوية أو لا لـ <@${targetUser.id}>:`,
             components: [confirmRow]
         });
 
-        // مؤقت 5 ثوانٍ للاختيار
         const filter = i => i.customId.startsWith('anon_');
         const collector = sentMsg.createMessageComponentCollector({ filter, time: 5000 });
 
         collector.on('collect', async i => {
-            if (i.customId.startsWith('anon_reveal')) {
-                const parts = i.customId.split('_');
-                const targetId = parts[2];
-                const senderId = parts[3];
-                
-                const targetUserObj = await client.users.fetch(targetId).catch(() => null);
-                if (targetUserObj) {
-                    await targetUserObj.send(`**عندك رسالة من مجهول**\nالرسالة: ${message.content}\nالراسل: <@${senderId}>`).catch(() => {});
-                }
-                await i.update({ content: 'تم إرسال الرسالة مع إفصاح الهوية بنجاح.', components: [] });
-                setTimeout(() => sentMsg.delete().catch(() => {}), 2000);
-            } else if (i.customId.startsWith('anon_secret')) {
-                const targetId = i.customId.split('_')[2];
-                const targetUserObj = await client.users.fetch(targetId).catch(() => null);
-                if (targetUserObj) {
-                    await targetUserObj.send(`**عندك رسالة من مجهول**\nالرسالة: ${message.content}\nالراسل: مجهول الهوية`).catch(() => {});
-                }
-                await i.update({ content: 'تم إرسال الرسالة بهوية سرية بنجاح.', components: [] });
-                setTimeout(() => sentMsg.delete().catch(() => {}), 2000);
+            const parts = i.customId.split('_');
+            const type = parts[1];
+            const targetId = parts[2];
+            const senderId = parts[3];
+            
+            const targetUserObj = await client.users.fetch(targetId).catch(() => null);
+            const senderTag = type === 'reveal' ? `الراسل <@${senderId}>` : `الراسل مجهول الهوية`;
+
+            if (targetUserObj) {
+                await targetUserObj.send(`**عندك رسالة من مجهول**\n\n**${message.content}**\n\n${senderTag}`).catch(() => {});
             }
+            await i.update({ content: 'تم إرسال الرسالة بنجاح.', components: [] });
+            setTimeout(() => sentMsg.delete().catch(() => {}), 2000);
         });
 
         collector.on('end', collected => {
