@@ -14,9 +14,11 @@ const VC_CHANNEL_ID = '1543093370065260564';
 const ANON_CHANNEL_ID = '1543113579962835054';
 
 const db = {
-    messages: new Map(),
-    words: new Map(),
-    voiceMinutes: new Map()
+    messages: new Map(),       // إجمالي الرسائل لكل مستخدم
+    words: new Map(),          // إجمالي الكلمات لكل مستخدم
+    voiceMinutes: new Map(),   // إجمالي دقائق الفويس لكل مستخدم
+    dailyMessages: new Map(),  // رسائل اليوم
+    dailyVoice: new Map()      // فويس اليوم
 };
 
 client.once('ready', async () => {
@@ -26,27 +28,36 @@ client.once('ready', async () => {
 });
 
 // تتبع الكلمات والرسائل
-client.on('messageCreate', message => {
+client.on('messageCreate', async message => {
     if (message.author.bot) return;
+
+    // فحص نظام رسالة من مجهول في روم الروم المخصص أو أي شات
+    if (message.channel.id === ANON_CHANNEL_ID || message.content.includes('@')) {
+        const handled = await handleAnonymousMessage(message);
+        if (handled) return;
+    }
     
     const userId = message.author.id;
     const wordCount = message.content.trim().split(/\s+/).length;
 
     db.messages.set(userId, (db.messages.get(userId) || 0) + 1);
     db.words.set(userId, (db.words.get(userId) || 0) + wordCount);
-
-    handleAnonymousMessage(message);
+    db.dailyMessages.set(userId, (db.dailyMessages.get(userId) || 0) + 1);
 });
 
-// تتبع الفويس وحساب النقاط (10 نقاط لكل دقيقة)
+// تتبع الفويس وحساب النقاط (10 نقاط لكل دقيقة وتخزين الساعات والدقائق)
 client.on('voiceStateUpdate', (oldState, newState) => {
     if (!oldState.channelId && newState.channelId) {
         newState.member.voiceJoinTime = Date.now();
     } else if (oldState.channelId && !newState.channelId && oldState.member.voiceJoinTime) {
         const durationMins = Math.floor((Date.now() - oldState.member.voiceJoinTime) / 60000);
         const userId = oldState.member.id;
+        
         const currentMins = db.voiceMinutes.get(userId) || 0;
         db.voiceMinutes.set(userId, currentMins + durationMins);
+
+        const currentDailyMins = db.dailyVoice.get(userId) || 0;
+        db.dailyVoice.set(userId, currentDailyMins + durationMins);
     }
 });
 
@@ -91,7 +102,7 @@ async function updateLeaderboards() {
             await vcChannel.send({ embeds: [embed] });
         }
 
-        // 3. إرسال رسالة "رسالة من مجهول" في القناة المخصصة
+        // 3. إرسال رسالة "رسالة من مجهول" في القناة المخصصة بخلفية سوداء فارغة
         const anonChannel = await client.channels.fetch(ANON_CHANNEL_ID).catch(() => null);
         if (anonChannel) {
             const messages = await anonChannel.messages.fetch({ limit: 5 }).catch(() => null);
@@ -100,16 +111,13 @@ async function updateLeaderboards() {
             if (!botMessage) {
                 const embed = new EmbedBuilder()
                     .setColor('#1e1f22')
-                    .setDescription('أرسل الرسالة وتطمئن، كل شيء بسرية تامة.');
+                    .setDescription('اكتب رسالتك بسرية تامة\nوكل شي محفوظ هنا');
 
-                const row1 = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('anonymous_msg_btn').setLabel('رسالة من مجهول').setStyle(ButtonStyle.Secondary)
-                );
-                const row2 = new ActionRowBuilder().addComponents(
+                const row = new ActionRowBuilder().addComponents(
                     new ButtonBuilder().setCustomId('anonymous_msg_btn').setLabel('رسالة من مجهول').setStyle(ButtonStyle.Secondary)
                 );
 
-                await anonChannel.send({ embeds: [embed], components: [row1, row2] });
+                await anonChannel.send({ embeds: [embed], components: [row] });
             }
         }
     } catch (err) {
@@ -129,22 +137,50 @@ function getTopVoiceText() {
     return sorted.map((item, index) => `${index + 1}. <@${item[0]}> ⎯ ${item[1] * 10}`).join('\n');
 }
 
+function formatTime(totalMins) {
+    const hours = Math.floor(totalMins / 60);
+    const mins = totalMins % 60;
+    if (hours > 0) {
+        return `${hours}h ${mins}m`;
+    }
+    return `${mins}m`;
+}
+
 client.on('interactionCreate', async interaction => {
     if (!interaction.isButton()) return;
 
     if (interaction.customId === 'my_stats_txt') {
         await interaction.deferReply({ ephemeral: true });
         const userId = interaction.user.id;
-        const userWords = db.words.get(userId) || 0;
-        const userMsgs = db.messages.get(userId) || 0;
         
-        const sorted = [...db.words.entries()].sort((a, b) => b[1] - a[1]);
-        const rank = sorted.findIndex(item => item[0] === userId) + 1 || 'خارج التصنيف';
+        const allWords = db.words.get(userId) || 0;
+        const msgToday = db.dailyMessages.get(userId) || 0;
+        
+        const sortedWords = [...db.words.entries()].sort((a, b) => b[1] - a[1]);
+        const rank = sortedWords.findIndex(item => item[0] === userId) + 1 || sortedWords.length + 1;
 
         const embed = new EmbedBuilder()
             .setTitle('My Message Stats')
             .setColor('#1e1f22')
-            .setDescription(`**All Time Words:** ${userWords}\n**Messages:** ${userMsgs}\n**Rank:** #${rank}`);
+            .setDescription(`all messages server ${allWords}\nmessages this day ${msgToday}\n#rank ${rank}`);
+
+        await interaction.editReply({ embeds: [embed] });
+    }
+
+    if (interaction.customId === 'my_stats_vc') {
+        await interaction.deferReply({ ephemeral: true });
+        const userId = interaction.user.id;
+        
+        const totalMins = db.voiceMinutes.get(userId) || 0;
+        const dailyMins = db.dailyVoice.get(userId) || 0;
+        
+        const sortedVc = [...db.voiceMinutes.entries()].sort((a, b) => b[1] - a[1]);
+        const rank = sortedVc.findIndex(item => item[0] === userId) + 1 || sortedVc.length + 1;
+
+        const embed = new EmbedBuilder()
+            .setTitle('My Voice Stats')
+            .setColor('#1e1f22')
+            .setDescription(`time server ${formatTime(totalMins)}\ntime this day ${formatTime(dailyMins)}\n#rank ${rank}`);
 
         await interaction.editReply({ embeds: [embed] });
     }
@@ -153,48 +189,57 @@ client.on('interactionCreate', async interaction => {
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('start_anon_flow').setLabel('ابدأ كتابة الرسالة').setStyle(ButtonStyle.Secondary)
         );
-        await interaction.reply({ content: 'يرجى الاختيار للإفصاح عن الهوية أو لا عبر الضغط بالأسفل:', components: [row], ephemeral: true });
+        await interaction.reply({ content: 'اكتب رسالتك الآن متضمنة المنشن.', components: [row], ephemeral: true });
     }
 
     if (interaction.customId === 'start_anon_flow') {
-        await interaction.update({ content: 'ارفق الرسالة مع المنشن الآن في الشات.', components: [] });
+        await interaction.update({ content: 'قم بإرسال رسالتك مع المنشن في الشات الآن.', components: [] });
     }
 });
 
+// معالجة رسالة من مجهول والتحقق الفوري من المنشن والسرعة
 async function handleAnonymousMessage(message) {
-    if (message.mentions.users.size > 0 && message.content.length > 3) {
-        const targetUser = message.mentions.users.first();
-        if (targetUser.id === message.author.id) return;
+    if (message.author.bot) return false;
 
+    if (message.mentions.users.size > 0) {
+        const targetUser = message.mentions.users.first();
+        if (targetUser.id === message.author.id) return false;
+
+        const content = message.content;
+        const senderId = message.author.id;
+
+        // حذف الرسالة فوراً لتكون سرية
         await message.delete().catch(() => {});
 
         const confirmRow = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId(`anon_reveal_${targetUser.id}_${message.author.id}`).setLabel('إفصاح عن الهوية').setStyle(ButtonStyle.Primary),
-            new ButtonBuilder().setCustomId(`anon_secret_${targetUser.id}_${message.author.id}`).setLabel('مجهول الهوية').setStyle(ButtonStyle.Secondary)
+            new ButtonBuilder().setCustomId(`anon_reveal_${targetUser.id}_${senderId}`).setLabel('كشف').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId(`anon_secret_${targetUser.id}_${senderId}`).setLabel('إخفاء').setStyle(ButtonStyle.Secondary)
         );
 
         const sentMsg = await message.channel.send({
-            content: `يرجى الاختيار للإفصاح عن الهوية لـ <@${targetUser.id}>:`,
+            content: `اختر لكشف هويتك أو إخفائها لـ <@${targetUser.id}>:`,
             components: [confirmRow]
         });
 
-        const filter = i => i.customId.startsWith('anon_');
-        const collector = sentMsg.createMessageComponentCollector({ filter, time: 15000 });
+        const filter = i => i.customId.startsWith('anon_') && i.user.id === senderId;
+        const collector = sentMsg.createMessageComponentCollector({ filter, time: 20000 });
 
         collector.on('collect', async i => {
             const parts = i.customId.split('_');
             const type = parts[1];
             const targetId = parts[2];
-            const senderId = parts[3];
+            const originalSenderId = parts[3];
             
             const targetUserObj = await client.users.fetch(targetId).catch(() => null);
-            const senderTag = type === 'reveal' ? `الراسل <@${senderId}>` : `الراسل مجهول الهوية`;
+            const senderTag = type === 'reveal' ? `الراسل <@${originalSenderId}>` : `الراسل مجهول الهوية`;
 
             if (targetUserObj) {
-                await targetUserObj.send(`**عندك رسالة من مجهول**\n\n**${message.content}**\n\n${senderTag}`).catch(() => {});
+                // إرسال الرسالة بالخاص خلال أقل من ثانية وبدون نقطتين أم راس
+                await targetUserObj.send(`**${content}**\n\n${senderTag}`).catch(() => {});
             }
-            await i.update({ content: `تم إرسال الرسالة إلى <@${targetId}> بنجاح.`, components: [] });
-            setTimeout(() => sentMsg.delete().catch(() => {}), 2000);
+
+            await i.update({ content: 'تم إرسال الرسالة', components: [] });
+            setTimeout(() => sentMsg.delete().catch(() => {}), 1000);
         });
 
         collector.on('end', collected => {
@@ -202,7 +247,17 @@ async function handleAnonymousMessage(message) {
                 sentMsg.delete().catch(() => {});
             }
         });
+
+        return true;
+    } else if (message.channel.id === ANON_CHANNEL_ID) {
+        // إذا لم يتم منشن أي شخص
+        await message.delete().catch(() => {});
+        const warnMsg = await message.channel.send({ content: 'لم تقم بمنشن أي شخص، يجدر بك منشن شخص لإرسال الرسالة.' });
+        setTimeout(() => warnMsg.delete().catch(() => {}), 3000);
+        return true;
     }
+
+    return false;
 }
 
 client.login(process.env.TOKEN);
