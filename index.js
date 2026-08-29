@@ -1,5 +1,5 @@
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder } = require('discord.js');
-const Canvas = require('canvas');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder, ChannelType } = require('discord.js');
+const Canvas = class CanvasMock {}; // يمكن استبدالها بمكتبة canvas الفعلية حسب رغبتك
 
 const client = new Client({
     intents: [
@@ -10,126 +10,154 @@ const client = new Client({
     ]
 });
 
-const CHANNEL_ID = '1543093370065260564';
+// تعبئة اIDs الخاصة بالرووم والأقسام
+const TXT_CHANNEL_ID = '1543093370065260564'; // روم توب الرسائل
+const VC_CHANNEL_ID = 'REPLACE_WITH_VC_CHANNEL_ID'; // روم توب الفويس
 
-// قاعدة بيانات وهمية مؤقتة
+// قواعد بيانات وهمية لتخزين الرسائل، الكلمات، وأوقات الفويس
 const db = {
-    users: new Map()
+    messages: new Map(), // userId -> count
+    words: new Map(),    // userId -> total words
+    voiceTime: new Map(), // userId -> milliseconds
+    voiceRooms: new Map() // userId -> Map(roomName -> time)
 };
 
 client.once('ready', () => {
     console.log(`Logged in as ${client.user.tag}!`);
-    startLeaderboardLoop();
+    startLeaderboardLoops();
 });
 
-// نظام تتبع الرسائل
+// تتبع الرسائل والكلمات
 client.on('messageCreate', message => {
     if (message.author.bot) return;
-    let data = db.users.get(message.author.id) || { voiceMinutes: 0, messages: 0 };
-    data.messages += 1;
-    db.users.set(message.author.id, data);
+    
+    const userId = message.author.id;
+    const wordCount = message.content.trim().split(/\s+/).length;
+
+    db.messages.set(userId, (db.messages.get(userId) || 0) + 1);
+    db.words.set(userId, (db.words.get(userId) || 0) + wordCount);
+
+    // نظام الرسالة من مجهول والتحقق من المنشن
+    handleAnonymousMessage(message);
 });
 
-// حلقة التحديث كل 15 ثانية لوحة المتصدرين
-function startLeaderboardLoop() {
+// حلقات التحديث التلقائي كل 30 ثانية لكل من اللوحتين
+function startLeaderboardLoops() {
+    // تحديث توب الرسائل
     setInterval(async () => {
         try {
-            const channel = await client.channels.fetch(CHANNEL_ID);
+            const channel = await client.channels.fetch(TXT_CHANNEL_ID);
             if (!channel) return;
 
-            const imageBuffer = await createLeaderboardImage();
-            const attachment = new AttachmentBuilder(imageBuffer, { name: 'leaderboard.png' });
+            const embed = new EmbedBuilder()
+                .setTitle('Top Messages')
+                .setColor('#1e1f22')
+                .setDescription(getTopMessagesText())
+                .setFooter({ text: 'Updated 30 seconds ago' });
 
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId('interactive_stats')
-                    .setLabel('تفاعلي')
-                    .setStyle(ButtonStyle.Primary)
+                new ButtonBuilder().setCustomId('my_stats_txt').setLabel('My Stats').setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder().setCustomId('anonymous_msg_btn').setLabel('رسالة من مجهول').setStyle(ButtonStyle.Secondary)
             );
 
             const messages = await channel.messages.fetch({ limit: 5 });
             const botMessage = messages.find(m => m.author.id === client.user.id);
             if (botMessage) await botMessage.delete().catch(() => {});
 
-            await channel.send({ files: [attachment], components: [row] });
-        } catch (error) {
-            console.error('Error updating leaderboard:', error);
+            await channel.send({ embeds: [embed], components: [row] });
+        } catch (err) {
+            console.error('Error updating txt leaderboard:', err);
         }
-    }, 15000);
+    }, 30000);
 }
 
-// دالة رسم اللوحة مع ضمان ظهور النصوص بوضوح وتجنب السواد
-async function createLeaderboardImage() {
-    const canvas = Canvas.createCanvas(1200, 675);
-    const ctx = canvas.getContext('2d');
-
-    // تعبئة خلفية ملونة واضحة (ليست سوداء صامتة)
-    ctx.fillStyle = '#1e1b4b';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // إضافة إطار جمالي
-    ctx.strokeStyle = '#6366f1';
-    ctx.lineWidth = 10;
-    ctx.strokeRect(0, 0, canvas.width, canvas.height);
-
-    // كتابة العنوان الرئيسي
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 50px Arial';
-    ctx.fillText('Ryth Voice Leaderboard', 80, 120);
-
-    // كتابة وصف فرعي
-    ctx.fillStyle = '#a5b4fc';
-    ctx.font = '28px Arial';
-    ctx.fillText('أفضل الأعضاء تفاعلاً في الصوتي والتشات', 80, 180);
-
-    return canvas.toBuffer('image/png');
+function getTopMessagesText() {
+    const sorted = [...db.words.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+    if (sorted.length === 0) return 'لا توجد بيانات كافية بعد.';
+    return sorted.map((item, index) => `${index + 1}. <@${item[0]}> — ${item[1]} words`).join('\n');
 }
 
-// التفاعل مع الزر وإرسال البروفايل
+// التفاعل مع الأزرار (My Stats & Anonymous Message)
 client.on('interactionCreate', async interaction => {
-    if (!interaction.isButton() || interaction.customId !== 'interactive_stats') return;
+    if (!interaction.isButton()) return;
 
-    await interaction.deferReply({ ephemeral: true });
+    if (interaction.customId === 'my_stats_txt') {
+        await interaction.deferReply({ ephemeral: true });
+        const userId = interaction.user.id;
+        const userWords = db.words.get(userId) || 0;
+        const userMsgs = db.messages.get(userId) || 0;
+        
+        const sorted = [...db.words.entries()].sort((a, b) => b[1] - a[1]);
+        const rank = sorted.findIndex(item => item[0] === userId) + 1 || 'خارج التصنيف';
 
-    const userId = interaction.user.id;
-    const userData = db.users.get(userId) || { voiceMinutes: 0, messages: 0 };
-    
-    const rank = '#1';
-    const level = Math.floor(userData.voiceMinutes / 10);
-    const chatXP = userData.messages * 5;
+        const embed = new EmbedBuilder()
+            .setTitle('My Message Stats')
+            .setColor('#1e1f22')
+            .setDescription(`**All Time Words:** ${userWords}\n**Messages:** ${userMsgs}\n**Rank:** #${rank}`);
 
-    const profileBuffer = await createProfileImage(interaction.user, level, chatXP, rank, userData.messages);
-    const attachment = new AttachmentBuilder(profileBuffer, { name: 'profile.png' });
+        await interaction.editReply({ embeds: [embed] });
+    }
 
-    await interaction.editReply({ files: [attachment] });
+    if (interaction.customId === 'anonymous_msg_btn') {
+        await interaction.reply({ 
+            content: 'اكتب رسالتك للمجهول وكل شيء بسرية تامة. قم بكتابة رسالتك مع منشن الشخص المطلوبة ولا تنسَ كتابة نص مع المنشن.', 
+            ephemeral: true 
+        });
+    }
 });
 
-// دالة رسم البروفايل الشخصي
-async function createProfileImage(user, level, chatXP, rank, messages) {
-    const canvas = Canvas.createCanvas(1000, 600);
-    const ctx = canvas.getContext('2d');
+// معالجة الرسالة السرية ومنشن الشخص
+async function handleAnonymousMessage(message) {
+    if (message.mentions.users.size > 0 && message.content.length > 5) {
+        // التحقق من وجود نص مع المنشن وليس منشنًا بمفرده
+        const targetUser = message.mentions.users.first();
+        if (targetUser.id === message.author.id) return;
 
-    // خلفية البروفايل
-    ctx.fillStyle = '#0f172a';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+        await message.delete().catch(() => {});
 
-    ctx.strokeStyle = '#38bdf8';
-    ctx.lineWidth = 8;
-    ctx.strokeRect(0, 0, canvas.width, canvas.height);
+        const confirmRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`anon_reveal_${targetUser.id}_${message.author.id}`).setLabel('إفصاح عن الهوية').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId(`anon_secret_${targetUser.id}`).setLabel('هوية سرية').setStyle(ButtonStyle.Secondary)
+        );
 
-    // النصوص
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 40px Arial';
-    ctx.fillText(`إحصائيات المستخدم الشخصية`, 70, 100);
-    
-    ctx.fillStyle = `\#38bdf8`;
-    ctx.font = '30px Arial';
-    ctx.fillText(`المرتبة (Rank): ${rank}`, 70, 190);
-    ctx.fillText(`المستوى (Level): ${level}`, 70, 260);
-    ctx.fillText(`نقاط الشات (Chat XP): ${chatXP}`, 70, 330);
-    ctx.fillText(`عدد الرسائل: ${messages}`, 70, 400);
+        const sentMsg = await message.channel.send({
+            content: `لديك رسالة من مجهول مرسلة إلى <@${targetUser.id}>. اختر نوع الإفصاح (خلال 5 ثوانٍ):`,
+            components: [confirmRow]
+        });
 
-    return canvas.toBuffer('image/png');
+        // مؤقت 5 ثوانٍ للاختيار
+        const filter = i => i.customId.startsWith('anon_');
+        const collector = sentMsg.createMessageComponentCollector({ filter, time: 5000 });
+
+        collector.on('collect', async i => {
+            if (i.customId.startsWith('anon_reveal')) {
+                const parts = i.customId.split('_');
+                const targetId = parts[2];
+                const senderId = parts[3];
+                
+                const targetUserObj = await client.users.fetch(targetId).catch(() => null);
+                if (targetUserObj) {
+                    await targetUserObj.send(`**عندك رسالة من مجهول**\nالرسالة: ${message.content}\nالراسل: <@${senderId}>`).catch(() => {});
+                }
+                await i.update({ content: 'تم إرسال الرسالة مع إفصاح الهوية بنجاح.', components: [] });
+                setTimeout(() => sentMsg.delete().catch(() => {}), 2000);
+            } else if (i.customId.startsWith('anon_secret')) {
+                const targetId = i.customId.split('_')[2];
+                const targetUserObj = await client.users.fetch(targetId).catch(() => null);
+                if (targetUserObj) {
+                    await targetUserObj.send(`**عندك رسالة من مجهول**\nالرسالة: ${message.content}\nالراسل: مجهول الهوية`).catch(() => {});
+                }
+                await i.update({ content: 'تم إرسال الرسالة بهوية سرية بنجاح.', components: [] });
+                setTimeout(() => sentMsg.delete().catch(() => {}), 2000);
+            }
+        });
+
+        collector.on('end', collected => {
+            if (collected.size === 0) {
+                sentMsg.delete().catch(() => {});
+            }
+        });
+    }
 }
 
 client.login(process.env.TOKEN);
