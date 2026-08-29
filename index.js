@@ -211,23 +211,11 @@ client.on('interactionCreate', async interaction => {
                     await m.delete().catch(() => {}); // حذف رسالة المستخدم فوراً
                 } catch (err) {}
 
-                // جلب جميع الأشخاص المنشنين في الرسالة (سواء بالبداية، النهاية، أو أي مكان)
+                // جلب جميع الأشخاص المنشنين في الرسالة (سواء بالبداية، النهاية، أو أي مكان، حتى لو منشن نفسه)
                 const mentionedUsers = m.mentions.users;
 
-                // تصفية المنشنات: استبعاد البوتات ومنشن الشخص لنفسه
-                const validTargets = [];
-                for (const [targetId, userObj] of mentionedUsers) {
-                    if (targetId !== userId && !userObj.bot) {
-                        // التحقق من وجود العضو في السيرفر
-                        const member = await m.guild.members.fetch(targetId).catch(() => null);
-                        if (member) {
-                            validTargets.push(userObj);
-                        }
-                    }
-                }
-
-                // إذا لم يتم منشن أي شخص صحيح
-                if (validTargets.length === 0) {
+                // إذا لم يتم منشن أي شخص نهائياً في النص
+                if (mentionedUsers.size === 0) {
                     await interaction.followUp({
                         content: 'ما في منشن',
                         ephemeral: true
@@ -238,21 +226,31 @@ client.on('interactionCreate', async interaction => {
                 const content = m.content;
                 const senderDisplay = isReveal ? `<@${userId}>` : 'مجهول الهويه';
 
-                // إرسال الرسالة بالخاص لجميع الأشخاص المنشنين
-                for (const targetUser of validTargets) {
+                const sentTags = [];
+
+                // إرسال الرسالة بالخاص لجميع المنشنين (حتى لو منشن نفسه أو عدة أشخاص)
+                for (const [targetId, userObj] of mentionedUsers) {
+                    if (userObj.bot) continue;
+
                     try {
-                        await targetUser.send(`عندك رسالة من مجهول\nالرسالة : ${content}\nالراسل : ${senderDisplay}`);
+                        await userObj.send(`عندك رسالة من مجهول\nالرسالة : ${content}\nالراسل : ${senderDisplay}`);
+                        sentTags.push(`<@${targetId}>`);
                     } catch (err) {
-                        console.log(`Could not send DM to ${targetUser.tag}`);
+                        console.log(`Could not send DM to ${userObj.tag}`);
                     }
                 }
 
-                // تجهيز منشنات الأشخاص لإظهارها في رسالة التأكيد
-                const mentionedTags = validTargets.map(u => `<@${u.id}>`).join(', ');
+                if (sentTags.length === 0) {
+                    await interaction.followUp({
+                        content: 'ما في منشن',
+                        ephemeral: true
+                    });
+                    return;
+                }
 
-                // إشعار المرسل بنجاح الإرسال لجميع الأشخاص المنشنين
+                // إشعار المرسل بنجاح الإرسال
                 await interaction.followUp({
-                    content: `تم ارسال الرساله الى ${mentionedTags}`,
+                    content: `تم ارسال الرساله الى ${sentTags.join(', ')}`,
                     ephemeral: true
                 });
             });
