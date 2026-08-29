@@ -39,7 +39,7 @@ function startLeaderboardLoop() {
 
             // توليد صورة اللوحة (Voice Leaderboard)
             const imageBuffer = await createLeaderboardImage();
-            const attachment = new AttachmentBuilder(imageBuffer, { name: 'ryth-top.jpg' });
+            const attachment = new AttachmentBuilder(imageBuffer, { name: 'ryth-top.png' });
 
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
@@ -60,23 +60,23 @@ function startLeaderboardLoop() {
     }, 15000);
 }
 
-// دالة توليد صورة المتصدرين باستخدام Canvas
+// دالة توليد صورة المتصدرين بدون سواد
 async function createLeaderboardImage() {
     const canvas = Canvas.createCanvas(1200, 675);
     const ctx = canvas.getContext('2d');
 
-    // خلفية بسيطة مؤقتة (يمكنك استبدالها بخلفيتك الخاصة)
-    ctx.fillStyle = '#0a1128';
+    ctx.fillStyle = '#0f172a';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 36px Arial';
-    ctx.fillText('Ryth', 50, 60);
+    ctx.font = 'bold 45px Arial';
+    ctx.fillText('Ryth Voice Leaderboard', 60, 90);
 
-    ctx.font = '18px Arial';
-    ctx.fillText('VOICE TIME RANKING', 50, 95);
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '24px Arial';
+    ctx.fillText('Active Voice Members Ranking', 60, 140);
 
-    return canvas.toBuffer();
+    return canvas.toBuffer('image/png');
 }
 
 // التفاعل مع الزر وإرسال البروفايل الخاص
@@ -88,36 +88,33 @@ client.on('interactionCreate', async interaction => {
     const userId = interaction.user.id;
     const userData = db.users.get(userId) || { voiceMinutes: 0, messages: 0 };
     
-    // حساب الرانك والمستوى
-    const rank = '#1'; // مثال، يفضل حسابه من قاعدة البيانات
-    const level = Math.floor(userData.voiceMinutes / 10); // كل دقيقة 10 XP
+    const rank = '#1'; 
+    const level = Math.floor(userData.voiceMinutes / 10); 
     const chatXP = userData.messages * 5;
 
-    // توليد صورة البروفايل الشخصي
     const profileBuffer = await createProfileImage(interaction.user, level, chatXP, rank, userData.messages);
-    const attachment = new AttachmentBuilder(profileBuffer, { name: 'profile.jpg' });
+    const attachment = new AttachmentBuilder(profileBuffer, { name: 'profile.png' });
 
     await interaction.editReply({ files: [attachment] });
 });
 
-// دالة توليد صورة البروفايل الشخصي
+// دالة توليد صورة البروفايل الشخصي بدون سواد
 async function createProfileImage(user, level, chatXP, rank, messages) {
     const canvas = Canvas.createCanvas(1000, 600);
     const ctx = canvas.getContext('2d');
 
-    // خلفية البروفايل الأرجوانية
-    ctx.fillStyle = '#161026';
+    ctx.fillStyle = '#1e1b4b';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // كتابة النصوص المطلوبة بدقة
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 28px Arial';
-    ctx.fillText(`أنت ضمن أفضل ${rank}!`, 400, 250);
+    ctx.font = 'bold 36px Arial';
+    ctx.fillText(`أنت ضمن أفضل ${rank}!`, 80, 150);
     
-    ctx.font = '22px Arial';
-    ctx.fillText(`You are among the top ${rank}!`, 400, 300);
+    ctx.font = '24px Arial';
+    ctx.fillStyle = '#c084fc';
+    ctx.fillText(`Level: ${level}  |  Chat XP: ${chatXP}  |  Messages: ${messages}`, 80, 230);
 
-    return canvas.toBuffer();
+    return canvas.toBuffer('image/png');
 }
 
 client.login(process.env.TOKEN);
