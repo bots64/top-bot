@@ -1,6 +1,7 @@
 {
-  "name": "bot",
+  "name": "discord-bot",
   "version": "1.0.0",
+  "description": "Discord bot with stats and anonymous messages",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
