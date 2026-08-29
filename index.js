@@ -10,7 +10,6 @@ const client = new Client({
     ]
 });
 
-const TOKEN = 'ضع_توكن_البوت_هنا';
 const CHANNEL_ID = '1543093370065260564';
 
 // قاعدة بيانات وهمية مؤقتة (يمكنك ربطها بـ MongoDB أو SQLite لاحقاً)
@@ -121,4 +120,4 @@ async function createProfileImage(user, level, chatXP, rank, messages) {
     return canvas.toBuffer();
 }
 
-client.login(TOKEN);
+client.login(process.env.TOKEN);
