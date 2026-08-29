@@ -211,7 +211,7 @@ client.on('interactionCreate', async interaction => {
                     await m.delete().catch(() => {}); // حذف رسالة المستخدم فوراً
                 } catch (err) {}
 
-                // جلب جميع الأشخاص المنشنين في الرسالة (سواء بالبداية، النهاية، أو أي مكان، حتى لو منشن نفسه)
+                // جلب جميع الأشخاص المنشنين في الرسالة
                 const mentionedUsers = m.mentions.users;
 
                 // إذا لم يتم منشن أي شخص نهائياً في النص
@@ -228,7 +228,7 @@ client.on('interactionCreate', async interaction => {
 
                 const sentTags = [];
 
-                // إرسال الرسالة بالخاص لجميع المنشنين (حتى لو منشن نفسه أو عدة أشخاص)
+                // إرسال الرسالة بالخاص لجميع المنشنين بدون إعطاء المنشن خصائص تفاعلية زرقاء داخل جملة "الرسالة :"
                 for (const [targetId, userObj] of mentionedUsers) {
                     if (userObj.bot) continue;
 
