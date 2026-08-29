@@ -12,9 +12,9 @@ const client = new Client({
 
 const CHANNEL_ID = '1543093370065260564';
 
-// قاعدة بيانات وهمية مؤقتة (يمكنك ربطها بـ MongoDB أو SQLite لاحقاً)
+// قاعدة بيانات وهمية مؤقتة
 const db = {
-    users: new Map() // userId -> { voiceMinutes, messages }
+    users: new Map()
 };
 
 client.once('ready', () => {
@@ -22,7 +22,7 @@ client.once('ready', () => {
     startLeaderboardLoop();
 });
 
-// نظام تتبع الرسائل لحساب الـ Chat XP (5 XP لكل كلمة/رسالة)
+// نظام تتبع الرسائل
 client.on('messageCreate', message => {
     if (message.author.bot) return;
     let data = db.users.get(message.author.id) || { voiceMinutes: 0, messages: 0 };
@@ -30,16 +30,15 @@ client.on('messageCreate', message => {
     db.users.set(message.author.id, data);
 });
 
-// حلقة التحديث كل 15 ثانية للوحة المتصدرين
+// حلقة التحديث كل 15 ثانية لوحة المتصدرين
 function startLeaderboardLoop() {
     setInterval(async () => {
         try {
             const channel = await client.channels.fetch(CHANNEL_ID);
             if (!channel) return;
 
-            // توليد صورة اللوحة (Voice Leaderboard)
             const imageBuffer = await createLeaderboardImage();
-            const attachment = new AttachmentBuilder(imageBuffer, { name: 'ryth-top.png' });
+            const attachment = new AttachmentBuilder(imageBuffer, { name: 'leaderboard.png' });
 
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
@@ -48,7 +47,6 @@ function startLeaderboardLoop() {
                     .setStyle(ButtonStyle.Primary)
             );
 
-            // جلب آخر رسالة للبوت وحذفها لتجنب التراكم، ثم إرسال الجديدة
             const messages = await channel.messages.fetch({ limit: 5 });
             const botMessage = messages.find(m => m.author.id === client.user.id);
             if (botMessage) await botMessage.delete().catch(() => {});
@@ -60,26 +58,34 @@ function startLeaderboardLoop() {
     }, 15000);
 }
 
-// دالة توليد صورة المتصدرين بدون سواد
+// دالة رسم اللوحة مع ضمان ظهور النصوص بوضوح وتجنب السواد
 async function createLeaderboardImage() {
     const canvas = Canvas.createCanvas(1200, 675);
     const ctx = canvas.getContext('2d');
 
-    ctx.fillStyle = '#0f172a';
+    // تعبئة خلفية ملونة واضحة (ليست سوداء صامتة)
+    ctx.fillStyle = '#1e1b4b';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 45px Arial';
-    ctx.fillText('Ryth Voice Leaderboard', 60, 90);
+    // إضافة إطار جمالي
+    ctx.strokeStyle = '#6366f1';
+    ctx.lineWidth = 10;
+    ctx.strokeRect(0, 0, canvas.width, canvas.height);
 
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '24px Arial';
-    ctx.fillText('Active Voice Members Ranking', 60, 140);
+    // كتابة العنوان الرئيسي
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 50px Arial';
+    ctx.fillText('Ryth Voice Leaderboard', 80, 120);
+
+    // كتابة وصف فرعي
+    ctx.fillStyle = '#a5b4fc';
+    ctx.font = '28px Arial';
+    ctx.fillText('أفضل الأعضاء تفاعلاً في الصوتي والتشات', 80, 180);
 
     return canvas.toBuffer('image/png');
 }
 
-// التفاعل مع الزر وإرسال البروفايل الخاص
+// التفاعل مع الزر وإرسال البروفايل
 client.on('interactionCreate', async interaction => {
     if (!interaction.isButton() || interaction.customId !== 'interactive_stats') return;
 
@@ -88,8 +94,8 @@ client.on('interactionCreate', async interaction => {
     const userId = interaction.user.id;
     const userData = db.users.get(userId) || { voiceMinutes: 0, messages: 0 };
     
-    const rank = '#1'; 
-    const level = Math.floor(userData.voiceMinutes / 10); 
+    const rank = '#1';
+    const level = Math.floor(userData.voiceMinutes / 10);
     const chatXP = userData.messages * 5;
 
     const profileBuffer = await createProfileImage(interaction.user, level, chatXP, rank, userData.messages);
@@ -98,21 +104,30 @@ client.on('interactionCreate', async interaction => {
     await interaction.editReply({ files: [attachment] });
 });
 
-// دالة توليد صورة البروفايل الشخصي بدون سواد
+// دالة رسم البروفايل الشخصي
 async function createProfileImage(user, level, chatXP, rank, messages) {
     const canvas = Canvas.createCanvas(1000, 600);
     const ctx = canvas.getContext('2d');
 
-    ctx.fillStyle = '#1e1b4b';
+    // خلفية البروفايل
+    ctx.fillStyle = '#0f172a';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 8;
+    ctx.strokeRect(0, 0, canvas.width, canvas.height);
+
+    // النصوص
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 36px Arial';
-    ctx.fillText(`أنت ضمن أفضل ${rank}!`, 80, 150);
+    ctx.font = 'bold 40px Arial';
+    ctx.fillText(`إحصائيات المستخدم الشخصية`, 70, 100);
     
-    ctx.font = '24px Arial';
-    ctx.fillStyle = '#c084fc';
-    ctx.fillText(`Level: ${level}  |  Chat XP: ${chatXP}  |  Messages: ${messages}`, 80, 230);
+    ctx.fillStyle = `\#38bdf8`;
+    ctx.font = '30px Arial';
+    ctx.fillText(`المرتبة (Rank): ${rank}`, 70, 190);
+    ctx.fillText(`المستوى (Level): ${level}`, 70, 260);
+    ctx.fillText(`نقاط الشات (Chat XP): ${chatXP}`, 70, 330);
+    ctx.fillText(`عدد الرسائل: ${messages}`, 70, 400);
 
     return canvas.toBuffer('image/png');
 }
