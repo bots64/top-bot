@@ -20,7 +20,7 @@ const db = {
     voiceMinutes: new Map(),   
     dailyMessages: new Map(),  
     dailyVoice: new Map(),
-    cooldowns: new Map()       // تخزين وقت آخر استخدام لكل مستخدم لنظام الـ 5 دقائق
+    cooldowns: new Map()       
 };
 
 client.once('ready', async () => {
@@ -127,7 +127,7 @@ function getTopMessagesText() {
 }
 
 function getTopVoiceText() {
-    const sorted = [...db.voiceMinutes.entries()].sort((a, b) => b[1] - b[1]).slice(0, 10);
+    const sorted = [...db.voiceMinutes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
     if (sorted.length === 0) return 'لا توجد بيانات كافية بعد.';
     return sorted.map((item, index) => `${index + 1}. <@${item[0]}> ⎯ ${item[1] * 10}`).join('\n');
 }
@@ -166,13 +166,13 @@ client.on('interactionCreate', async interaction => {
         if (interaction.customId === 'anonymous_msg_btn') {
             const userId = interaction.user.id;
             const now = Date.now();
-            const cooldownTime = 5 * 60 * 1000; // 5 دقائق بالميلي ثانية
+            const cooldownTime = 5 * 60 * 1000; 
             const lastTime = db.cooldowns.get(userId) || 0;
 
             if (now - lastTime < cooldownTime) {
                 const expirationTimestamp = Math.floor((lastTime + cooldownTime) / 1000);
                 await interaction.reply({
-                    content: `لازم تنتظر <t:${expirationTimestamp}:R>**`,
+                    content: `لازم تنتظر <t:${expirationTimestamp}:R>`,
                     ephemeral: true
                 });
                 return;
@@ -192,7 +192,6 @@ client.on('interactionCreate', async interaction => {
         // عند اختيار كشف أو إخفاء الهوية
         if (interaction.customId === 'reveal_identity' || interaction.customId === 'hide_identity') {
             const userId = interaction.user.id;
-            // تحديث وقت الكولداون فور اختيار نوع الإرسال
             db.cooldowns.set(userId, Date.now());
 
             const isReveal = interaction.customId === 'reveal_identity';
@@ -203,29 +202,32 @@ client.on('interactionCreate', async interaction => {
                 ephemeral: true
             });
 
-            // فتح المجال (فك الشات) لاستلام رسالة واحدة فقط ثم إغلاقها فوراً
+            // فتح الشات لاستلام رسالة واحدة
             const filter = m => m.author.id === userId;
             const collector = interaction.channel.createMessageCollector({ filter, max: 1, time: 60000 });
 
             collector.on('collect', async m => {
                 try {
-                    await m.delete().catch(() => {}); // حذف رسالة المستخدم فوراً وقفل الشات عنه
+                    await m.delete().catch(() => {}); // حذف رسالة المستخدم فوراً
                 } catch (err) {}
 
-                const targetUser = m.mentions.users.first();
+                // جلب جميع الأشخاص المنشنين في الرسالة (سواء بالبداية، النهاية، أو أي مكان)
+                const mentionedUsers = m.mentions.users;
 
-                // إذا لم يوجد منشن أو قام بمنشن نفسه أو الشخص غير موجود بالسيرفر
-                if (!targetUser || targetUser.id === userId) {
-                    await interaction.followUp({
-                        content: 'ما في منشن',
-                        ephemeral: true
-                    });
-                    return;
+                // تصفية المنشنات: استبعاد البوتات ومنشن الشخص لنفسه
+                const validTargets = [];
+                for (const [targetId, userObj] of mentionedUsers) {
+                    if (targetId !== userId && !userObj.bot) {
+                        // التحقق من وجود العضو في السيرفر
+                        const member = await m.guild.members.fetch(targetId).catch(() => null);
+                        if (member) {
+                            validTargets.push(userObj);
+                        }
+                    }
                 }
 
-                // التحقق مما إذا كان الشخص موجوداً في السيرفر فعلياً
-                const member = await m.guild.members.fetch(targetUser.id).catch(() => null);
-                if (!member) {
+                // إذا لم يتم منشن أي شخص صحيح
+                if (validTargets.length === 0) {
                     await interaction.followUp({
                         content: 'ما في منشن',
                         ephemeral: true
@@ -236,16 +238,21 @@ client.on('interactionCreate', async interaction => {
                 const content = m.content;
                 const senderDisplay = isReveal ? `<@${userId}>` : 'مجهول الهويه';
 
-                // إرسال الرسالة للخاص للشخص المُمنشن بالشكل المطلوب
-                try {
-                    await targetUser.send(`عندك رسالة من مجهول\nالرسالة : ${content}\nالراسل : ${senderDisplay}`);
-                } catch (err) {
-                    console.log('Could not send DM.');
+                // إرسال الرسالة بالخاص لجميع الأشخاص المنشنين
+                for (const targetUser of validTargets) {
+                    try {
+                        await targetUser.send(`عندك رسالة من مجهول\nالرسالة : ${content}\nالراسل : ${senderDisplay}`);
+                    } catch (err) {
+                        console.log(`Could not send DM to ${targetUser.tag}`);
+                    }
                 }
 
-                // إشعار المرسل بنجاح الإرسال وإغلاق الشات عليه
+                // تجهيز منشنات الأشخاص لإظهارها في رسالة التأكيد
+                const mentionedTags = validTargets.map(u => `<@${u.id}>`).join(', ');
+
+                // إشعار المرسل بنجاح الإرسال لجميع الأشخاص المنشنين
                 await interaction.followUp({
-                    content: `تم ارسال الرساله الى <@${targetUser.id}>`,
+                    content: `تم ارسال الرساله الى ${mentionedTags}`,
                     ephemeral: true
                 });
             });
