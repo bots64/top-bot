@@ -1,3 +1,15 @@
+const express = require('express');
+const app = express();
+
+app.get('/', (req, res) => {
+    res.send('Bot is active and running!');
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Server is listening on port ${PORT}`);
+});
+
 const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 
 const client = new Client({
