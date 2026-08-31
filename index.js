@@ -25,6 +25,7 @@ const client = new Client({
 const TXT_CHANNEL_ID = '1543093337165144084';
 const VC_CHANNEL_ID = '1543093370065260564';
 const ANON_CHANNEL_ID = '1543113579962835054';
+const EXCLUDED_ROLE_ID = '1535875661997277194';
 
 const db = {
     messages: new Map(),       
@@ -52,9 +53,17 @@ client.once('ready', async () => {
     setInterval(updateLeaderboards, 30000);
 });
 
+// دالة التحقق من استبعاد العضو (إذا كان بوت أو يمتلك الرول المحدد)
+function isExcluded(member) {
+    if (!member) return true;
+    if (member.user.bot) return true;
+    if (member.roles.cache.has(EXCLUDED_ROLE_ID)) return true;
+    return false;
+}
+
 // تتبع الكلمات والرسائل العامة
 client.on('messageCreate', async message => {
-    if (message.author.bot) return;
+    if (isExcluded(message.member)) return;
     
     const userId = message.author.id;
     const wordCount = message.content.trim().split(/\s+/).length;
@@ -66,18 +75,17 @@ client.on('messageCreate', async message => {
 
 // تتبع الفويس
 client.on('voiceStateUpdate', (oldState, newState) => {
-    // تجاهل البوتات تماماً
-    if (newState.member && newState.member.user.bot) return;
-    if (oldState.member && oldState.member.user.bot) return;
+    const member = newState.member || oldState.member;
+    if (isExcluded(member)) return;
 
     // التحقق من أن الدخول أو الخروج يتم في الروم المحدد فقط
     const targetVoiceId = '1543093370065260564';
 
     if (!oldState.channelId && newState.channelId === targetVoiceId) {
-        newState.member.voiceJoinTime = Date.now();
-    } else if (oldState.channelId === targetVoiceId && !newState.channelId && oldState.member.voiceJoinTime) {
-        const durationMins = Math.floor((Date.now() - oldState.member.voiceJoinTime) / 60000);
-        const userId = oldState.member.id;
+        member.voiceJoinTime = Date.now();
+    } else if (oldState.channelId === targetVoiceId && !newState.channelId && member.voiceJoinTime) {
+        const durationMins = Math.floor((Date.now() - member.voiceJoinTime) / 60000);
+        const userId = member.id;
         
         const currentMins = db.voiceMinutes.get(userId) || 0;
         db.voiceMinutes.set(userId, currentMins + durationMins);
@@ -85,12 +93,12 @@ client.on('voiceStateUpdate', (oldState, newState) => {
         const currentDailyMins = db.dailyVoice.get(userId) || 0;
         db.dailyVoice.set(userId, currentDailyMins + durationMins);
         
-        oldState.member.voiceJoinTime = null;
+        member.voiceJoinTime = null;
     } else if (oldState.channelId === targetVoiceId && newState.channelId && newState.channelId !== targetVoiceId) {
         // إذا خرج من الروم المحدد إلى روم آخر
-        if (oldState.member.voiceJoinTime) {
-            const durationMins = Math.floor((Date.now() - oldState.member.voiceJoinTime) / 60000);
-            const userId = oldState.member.id;
+        if (member.voiceJoinTime) {
+            const durationMins = Math.floor((Date.now() - member.voiceJoinTime) / 60000);
+            const userId = member.id;
             
             const currentMins = db.voiceMinutes.get(userId) || 0;
             db.voiceMinutes.set(userId, currentMins + durationMins);
@@ -98,11 +106,11 @@ client.on('voiceStateUpdate', (oldState, newState) => {
             const currentDailyMins = db.dailyVoice.get(userId) || 0;
             db.dailyVoice.set(userId, currentDailyMins + durationMins);
             
-            oldState.member.voiceJoinTime = null;
+            member.voiceJoinTime = null;
         }
     } else if (oldState.channelId !== targetVoiceId && newState.channelId === targetVoiceId) {
         // إذا دخل إلى الروم المحدد من روم آخر
-        newState.member.voiceJoinTime = Date.now();
+        member.voiceJoinTime = Date.now();
     }
 });
 
@@ -178,7 +186,6 @@ function getTopMessagesText() {
 function getTopVoiceText() {
     const sorted = [...db.voiceMinutes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
     if (sorted.length === 0) return 'لا توجد بيانات كافية بعد.';
-    // تم جعل النقطة لكل دقيقة (item[1] * 1) بدلاً من 10
     return sorted.map((item, index) => `${index + 1}. <@${item[0]}> ⎯ ${item[1]}`).join('\n');
 }
 
@@ -277,7 +284,7 @@ client.on('interactionCreate', async interaction => {
                 const sentTags = [];
 
                 // إرسال الرسالة بالخاص لجميع المنشنين بالشكل المطلوب تماماً
-                for (const [targetId, userObj] of mentionedUsers) {
+                for (const [targetId, userObj] > of mentionedUsers) {
                     if (userObj.bot) continue;
 
                     try {
