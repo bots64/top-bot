@@ -35,6 +35,17 @@ const db = {
     cooldowns: new Map()       
 };
 
+// تصفير البيانات كل 30 يوم (30 * 24 * 60 * 60 * 1000 ميللي ثانية)
+const RESET_INTERVAL = 30 * 24 * 60 * 60 * 1000;
+setInterval(() => {
+    db.messages.clear();
+    db.words.clear();
+    db.voiceMinutes.clear();
+    db.dailyMessages.clear();
+    db.dailyVoice.clear();
+    console.log('Leaderboards have been reset automatically for the 30-day cycle.');
+}, RESET_INTERVAL);
+
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
     await updateLeaderboards();
@@ -55,9 +66,16 @@ client.on('messageCreate', async message => {
 
 // تتبع الفويس
 client.on('voiceStateUpdate', (oldState, newState) => {
-    if (!oldState.channelId && newState.channelId) {
+    // تجاهل البوتات تماماً
+    if (newState.member && newState.member.user.bot) return;
+    if (oldState.member && oldState.member.user.bot) return;
+
+    // التحقق من أن الدخول أو الخروج يتم في الروم المحدد فقط
+    const targetVoiceId = '1543093370065260564';
+
+    if (!oldState.channelId && newState.channelId === targetVoiceId) {
         newState.member.voiceJoinTime = Date.now();
-    } else if (oldState.channelId && !newState.channelId && oldState.member.voiceJoinTime) {
+    } else if (oldState.channelId === targetVoiceId && !newState.channelId && oldState.member.voiceJoinTime) {
         const durationMins = Math.floor((Date.now() - oldState.member.voiceJoinTime) / 60000);
         const userId = oldState.member.id;
         
@@ -66,6 +84,25 @@ client.on('voiceStateUpdate', (oldState, newState) => {
 
         const currentDailyMins = db.dailyVoice.get(userId) || 0;
         db.dailyVoice.set(userId, currentDailyMins + durationMins);
+        
+        oldState.member.voiceJoinTime = null;
+    } else if (oldState.channelId === targetVoiceId && newState.channelId && newState.channelId !== targetVoiceId) {
+        // إذا خرج من الروم المحدد إلى روم آخر
+        if (oldState.member.voiceJoinTime) {
+            const durationMins = Math.floor((Date.now() - oldState.member.voiceJoinTime) / 60000);
+            const userId = oldState.member.id;
+            
+            const currentMins = db.voiceMinutes.get(userId) || 0;
+            db.voiceMinutes.set(userId, currentMins + durationMins);
+
+            const currentDailyMins = db.dailyVoice.get(userId) || 0;
+            db.dailyVoice.set(userId, currentDailyMins + durationMins);
+            
+            oldState.member.voiceJoinTime = null;
+        }
+    } else if (oldState.channelId !== targetVoiceId && newState.channelId === targetVoiceId) {
+        // إذا دخل إلى الروم المحدد من روم آخر
+        newState.member.voiceJoinTime = Date.now();
     }
 });
 
@@ -141,7 +178,8 @@ function getTopMessagesText() {
 function getTopVoiceText() {
     const sorted = [...db.voiceMinutes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
     if (sorted.length === 0) return 'لا توجد بيانات كافية بعد.';
-    return sorted.map((item, index) => `${index + 1}. <@${item[0]}> ⎯ ${item[1] * 10}`).join('\n');
+    // تم جعل النقطة لكل دقيقة (item[1] * 1) بدلاً من 10
+    return sorted.map((item, index) => `${index + 1}. <@${item[0]}> ⎯ ${item[1]}`).join('\n');
 }
 
 // معالجة الأزرار
