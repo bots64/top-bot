@@ -10,16 +10,7 @@ app.listen(PORT, () => {
     console.log(`Server is listening on port ${PORT}`);
 });
 
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, AttachmentBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
-
-let createCanvas, loadImage;
-try {
-    const canvasModule = require('@napi-rs/canvas');
-    createCanvas = canvasModule.createCanvas;
-    loadImage = canvasModule.loadImage;
-} catch (e) {
-    console.error('Canvas module failed to load:', e);
-}
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 
 const client = new Client({
     intents: [
@@ -33,128 +24,187 @@ const client = new Client({
 
 const TXT_CHANNEL_ID = '1543093337165144084';
 const VC_CHANNEL_ID = '1543093370065260564';
-const COINS_PANEL_CHANNEL_ID = '1544164140111626300';
-const ANONYMOUS_CHANNEL_ID = '1543113579962835054';
+const ANON_CHANNEL_ID = '1543113579962835054';
 const EXCLUDED_ROLE_ID = '1535875661997277194';
-
-const ROLE_HIERARCHY = [
-    '1535522564061929512', '1535403948121395300', '1535724553563668561', '1535714669270925393',
-    '1535714783259787366', '1535714856009732179', '1535714949085794456', '1535715039288496199',
-    '1535715153885007912', '1535715241739026433', '1535715359477203014', '1535715454939824158',
-    '1535715789187842258', '1535715700654604429', '1535715983405359144', '1535716064921653299',
-    '1535716161197576212', '1535716253451288647', '1535716348947079322', '1535718216037568623',
-    '1535718336585924608', '1535718418664136845', '1535718512683913276', '1535718767777030237',
-    '1535718964683087963', '1535718917807538226', '1535718879911743619', '1535718823301480628',
-    '1535719622400020722', '1535719580167831583', '1535719507727880273', '1535719311992164442',
-    '1535719270250713161', '1535719233655275731', '1535719187861864569', '1535719144052232212',
-    '1535720365127376897', '1535774790357614652', '1535843524371808306', '1535720318776123483',
-    '1535720258655227966', '1535720208671440988', '1535720158092460052', '1535720065947668500',
-    '1535720112542187560', '1535720023384002630', '1535719977351389304', '1535722770414051328',
-    '1535722725706825889', '1535722681905979473', '1535722615925248151', '1535722539706220604',
-    '1535722498933530674', '1535722454218178580', '1535722385175748669', '1535722345975775323',
-    '1535722303550132284', '1535722243542360105', '1535722204627599391', '1535722173283573760',
-    '1535723709929623675', '1535723664874676286', '1535723604078239784', '1535723556426481757',
-    '1535723508389257397', '1535723441540567050', '1535723397231943832', '1535723352788836373',
-    '1535723308539187352', '1535723262204452966', '1535723214679052288', '1535724212222959777',
-    '1535724156791029801', '1535724113690099843', '1536989468492435496'
-];
+const ADMIN_ROLE_ID = '1544487320357572629';
 
 const db = {
-    messages: new Map(),
-    words: new Map(),
-    voiceMinutes: new Map(),
-    dailyMessages: new Map(),
+    messages: new Map(),       
+    words: new Map(),          
+    voiceMinutes: new Map(),   
+    dailyMessages: new Map(),  
     dailyVoice: new Map(),
-    messageCounters: new Map(),
-    coins: new Map(),
-    purchases: new Map()
+    cooldowns: new Map(),
+    bannedUsers: new Set()     
 };
+
+// تصفير البيانات كل 30 يوم (30 * 24 * 60 * 60 * 1000 ميللي ثانية)
+const RESET_INTERVAL = 30 * 24 * 60 * 60 * 1000;
+setInterval(() => {
+    db.messages.clear();
+    db.words.clear();
+    db.voiceMinutes.clear();
+    db.dailyMessages.clear();
+    db.dailyVoice.clear();
+    db.bannedUsers.clear();
+    console.log('Leaderboards have been reset automatically for the 30-day cycle.');
+}, RESET_INTERVAL);
 
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
     await updateLeaderboards();
-    await setupAnonymousPanel();
     setInterval(updateLeaderboards, 30000);
 });
 
+// دالة التحقق من استبعاد العضو (إذا كان بوت، يمتلك الرول المستبعد، أو محظور من التوب عبر أمر leve)
 function isExcluded(member) {
     if (!member) return true;
     if (member.user.bot) return true;
     if (member.roles.cache.has(EXCLUDED_ROLE_ID)) return true;
+    if (db.bannedUsers.has(member.id)) return true;
     return false;
 }
 
-// تتبع الرسائل والنقاط (كل 5 رسائل = 1 كوين) والأمر "نقاط"
+// تتبع الكلمات والرسائل العامة (كل رسالة = 1 نقطة للشات)
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
+    
+    // التعامل مع الأوامر الجديدة الخاصة بالرول الإداري
+    if (message.content.startsWith('leve ') || message.content.startsWith('come ') || message.content.startsWith('اعطاء 1000 voice') || message.content.startsWith('اعطاء 1000 chat') || message.content.startsWith('سحب 1000 ')) {
+        if (!message.member.roles.cache.has(ADMIN_ROLE_ID)) {
+            return message.reply({ content: 'ليس لديك الصلاحية لاستخدام هذا الأمر.', ephemeral: true });
+        }
 
-    // روم رسالة من مجهول
-    if (message.channel.id === ANONYMOUS_CHANNEL_ID && !message.system) {
-        // يمكننا ترك الروم نظيفاً أو حذف رسائل المستخدم العادية لتظهر اللوحة فقط
+        if (message.content.startsWith('leve ')) {
+            const targetMember = message.mentions.members.first();
+            if (!targetMember) return message.reply('يرجى منشن الشخص المراد إبعاده عن التوب.');
+            
+            db.bannedUsers.add(targetMember.id);
+            await updateLeaderboards();
+            return message.reply(`تم إبعاد العضو <@${targetMember.id}> من التوب نهائياً ولن يتم احتساب نقاطه.`);
+        }
+
+        if (message.content.startsWith('come ')) {
+            const targetMember = message.mentions.members.first();
+            if (!targetMember) return message.reply('يرجى منشن الشخص المراد إرجاعه للتوب.');
+            
+            db.bannedUsers.delete(targetMember.id);
+            await updateLeaderboards();
+            return message.reply(`تم إعادة العضو <@${targetMember.id}> للتوب بنجاح.`);
+        }
+
+        if (message.content.startsWith('اعطاء 1000 voice')) {
+            const targetMember = message.mentions.members.first();
+            if (!targetMember) return message.reply('يرجى منشن الشخص لإعطائه نقاط الفويس.');
+            
+            const currentVoice = db.voiceMinutes.get(targetMember.id) || 0;
+            db.voiceMinutes.set(targetMember.id, currentVoice + 1000);
+            await updateLeaderboards();
+            return message.reply(`تم إعطاء العضو <@${targetMember.id}> مبلغ 1000 نقطة فويس بنجاح.`);
+        }
+
+        if (message.content.startsWith('اعطاء 1000 chat')) {
+            const targetMember = message.mentions.members.first();
+            if (!targetMember) return message.reply('يرجى منشن الشخص لإعطائه نقاط الشات.');
+            
+            const currentWords = db.words.get(targetMember.id) || 0;
+            db.words.set(targetMember.id, currentWords + 1000);
+            await updateLeaderboards();
+            return message.reply(`تم إعطاء العضو <@${targetMember.id}> مبلغ 1000 نقطة شات بنجاح.`);
+        }
+
+        if (message.content.startsWith('سحب 1000 ')) {
+            const targetMember = message.mentions.members.first();
+            if (!targetMember) return message.reply('يرجى منشن الشخص لسحب النقاط منه.');
+            
+            const currentWords = db.words.get(targetMember.id) || 0;
+            if (currentWords < 1000) {
+                return message.reply('ليس معه نقاط كافية');
+            }
+            db.words.set(targetMember.id, currentWords - 1000);
+            await updateLeaderboards();
+            return message.reply(`تم سحب 1000 نقطة من العضو <@${targetMember.id}> بنجاح.`);
+        }
     }
 
     if (isExcluded(message.member)) return;
+    
     const userId = message.author.id;
-    const content = message.content.trim();
 
-    // أمر "نقاط" أو "نقاطي"
-    if (content === 'نقاط' || content === 'نقاطي') {
-        const attachment = await generateProfileCard(message.member);
-        if (attachment) {
-            await message.reply({ files: [attachment] }).catch(() => {});
-        }
-        return;
-    }
-
-    const wordCount = content.split(/\s+/).length;
     db.messages.set(userId, (db.messages.get(userId) || 0) + 1);
-    db.words.set(userId, (db.words.get(userId) || 0) + wordCount);
-
-    const currentMsgCount = (db.messageCounters.get(userId) || 0) + 1;
-    if (currentMsgCount >= 5) {
-        db.messageCounters.set(userId, 0);
-        db.coins.set(userId, (db.coins.get(userId) || 0) + 1);
-    } else {
-        db.messageCounters.set(userId, currentMsgCount);
-    }
+    db.words.set(userId, (db.words.get(userId) || 0) + 1);
+    db.dailyMessages.set(userId, (db.dailyMessages.get(userId) || 0) + 1);
 });
 
-// تتبع الفويس (كل دقيقة = نقطة صوتية)
+// تتبع الفويس (كل دقيقة يقعدها بالفويس تحسب 1 نقطة)
 client.on('voiceStateUpdate', (oldState, newState) => {
     const member = newState.member || oldState.member;
     if (isExcluded(member)) return;
 
-    if (!oldState.channelId && newState.channelId) {
+    const targetVoiceId = '1543093370065260564';
+
+    if (!oldState.channelId && newState.channelId === targetVoiceId) {
         member.voiceJoinTime = Date.now();
-    } else if (oldState.channelId && !newState.channelId && member.voiceJoinTime) {
+    } else if (oldState.channelId === targetVoiceId && !newState.channelId && member.voiceJoinTime) {
         const durationMins = Math.floor((Date.now() - member.voiceJoinTime) / 60000);
-        if (durationMins > 0) {
-            const userId = member.id;
-            db.voiceMinutes.set(userId, (db.voiceMinutes.get(userId) || 0) + durationMins);
-        }
+        const userId = member.id;
+        
+        const currentMins = db.voiceMinutes.get(userId) || 0;
+        db.voiceMinutes.set(userId, currentMins + durationMins);
+
+        const currentDailyMins = db.dailyVoice.get(userId) || 0;
+        db.dailyVoice.set(userId, currentDailyMins + durationMins);
+        
         member.voiceJoinTime = null;
-    } else if (oldState.channelId && newState.channelId && oldState.channelId !== newState.channelId) {
+    } else if (oldState.channelId === targetVoiceId && newState.channelId && newState.channelId !== targetVoiceId) {
         if (member.voiceJoinTime) {
             const durationMins = Math.floor((Date.now() - member.voiceJoinTime) / 60000);
-            if (durationMins > 0) {
-                const userId = member.id;
-                db.voiceMinutes.set(userId, (db.voiceMinutes.get(userId) || 0) + durationMins);
-            }
+            const userId = member.id;
+            
+            const currentMins = db.voiceMinutes.get(userId) || 0;
+            db.voiceMinutes.set(userId, currentMins + durationMins);
+
+            const currentDailyMins = db.dailyVoice.get(userId) || 0;
+            db.dailyVoice.set(userId, currentDailyMins + durationMins);
+            
+            member.voiceJoinTime = null;
         }
+    } else if (oldState.channelId !== targetVoiceId && newState.channelId === targetVoiceId) {
         member.voiceJoinTime = Date.now();
     }
 });
 
-// تحديث التوب فويس والتوب رسائل
 async function updateLeaderboards() {
     try {
+        // 1. تحديث توب الكلمات/الشات (يحتوي على زر My Stats فقط)
+        const txtChannel = await client.channels.fetch(TXT_CHANNEL_ID).catch(() => null);
+        if (txtChannel) {
+            const embed = new EmbedBuilder()
+                .setTitle('Top Messages')
+                .setColor('#1e1f22')
+                .setDescription(getTopMessagesText())
+                .setFooter({ text: 'Updated 30 seconds ago' });
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('my_stats_txt').setLabel('My Stats').setStyle(ButtonStyle.Secondary)
+            );
+
+            const messages = await txtChannel.messages.fetch({ limit: 10 }).catch(() => null);
+            if (messages) {
+                const botMessage = messages.find(m => m.author.id === client.user.id);
+                if (botMessage) await botMessage.delete().catch(() => {});
+            }
+            await txtChannel.send({ embeds: [embed], components: [row] });
+        }
+
+        // 2. تحديث توب الفويس
         const vcChannel = await client.channels.fetch(VC_CHANNEL_ID).catch(() => null);
         if (vcChannel) {
             const embed = new EmbedBuilder()
                 .setTitle('Top Voice')
                 .setColor('#1e1f22')
                 .setDescription(getTopVoiceText())
-                .setFooter({ text: 'Updated recently' });
+                .setFooter({ text: 'Updated 30 seconds ago' });
 
             const messages = await vcChannel.messages.fetch({ limit: 10 }).catch(() => null);
             if (messages) {
@@ -164,24 +214,22 @@ async function updateLeaderboards() {
             await vcChannel.send({ embeds: [embed] });
         }
 
-        const coinsPanelChannel = await client.channels.fetch(COINS_PANEL_CHANNEL_ID).catch(() => null);
-        if (coinsPanelChannel) {
-            const messages = await coinsPanelChannel.messages.fetch({ limit: 10 }).catch(() => null);
+        // 3. رسالة "رسالة من مجهول" في القناة المخصصة
+        const anonChannel = await client.channels.fetch(ANON_CHANNEL_ID).catch(() => null);
+        if (anonChannel) {
+            const messages = await anonChannel.messages.fetch({ limit: 5 }).catch(() => null);
             const botMessage = messages ? messages.find(m => m.author.id === client.user.id) : null;
             
-            const embed = new EmbedBuilder()
-                .setTitle('Coins Panel')
-                .setColor('#1e1f22')
-                .setDescription('اضغط على الزر بالأسفل لعرض قائمة الرولات المتاحة للشراء.');
+            if (!botMessage) {
+                const embed = new EmbedBuilder()
+                    .setColor('#1e1f22')
+                    .setDescription('اكتب رسالتك بسرية تامة\nوكل شي محفوظ هنا');
 
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('coins_buy_roles').setLabel('شراء الرولات').setStyle(ButtonStyle.Secondary)
-            );
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('anonymous_msg_btn').setLabel('رسالة من مجهول').setStyle(ButtonStyle.Secondary)
+                );
 
-            if (botMessage) {
-                await botMessage.edit({ embeds: [embed], components: [row] }).catch(() => {});
-            } else {
-                await coinsPanelChannel.send({ embeds: [embed], components: [row] });
+                await anonChannel.send({ embeds: [embed], components: [row] });
             }
         }
     } catch (err) {
@@ -189,255 +237,138 @@ async function updateLeaderboards() {
     }
 }
 
-async function setupAnonymousPanel() {
-    try {
-        const anonChannel = await client.channels.fetch(ANONYMOUS_CHANNEL_ID).catch(() => null);
-        if (anonChannel) {
-            const messages = await anonChannel.messages.fetch({ limit: 10 }).catch(() => null);
-            const botMessage = messages ? messages.find(m => m.author.id === client.user.id) : null;
-
-            const embed = new EmbedBuilder()
-                .setTitle('اكتب رسالتك بسرية تامة وكل شي محفوط هنا')
-                .setColor('#1e1f22');
-
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('send_anonymous_msg').setLabel('رسالة من مجهول').setStyle(ButtonStyle.Secondary)
-            );
-
-            if (botMessage) {
-                await botMessage.edit({ embeds: [embed], components: [row] }).catch(() => {});
-            } else {
-                await anonChannel.send({ embeds: [embed], components: [row] });
-            }
-        }
-    } catch (err) {
-        console.error('Error in setupAnonymousPanel:', err);
-    }
+function getTopMessagesText() {
+    const sorted = [...db.words.entries()].filter(([userId]) => !db.bannedUsers.has(userId)).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    if (sorted.length === 0) return 'لا توجد بيانات كافية بعد.';
+    return sorted.map((item, index) => `${index + 1}. <@${item[0]}> ⎯ ${item[1]}`).join('\n');
 }
 
 function getTopVoiceText() {
-    const sorted = [...db.voiceMinutes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+    const sorted = [...db.voiceMinutes.entries()].filter(([userId]) => !db.bannedUsers.has(userId)).sort((a, b) => b[1] - a[1]).slice(0, 10);
     if (sorted.length === 0) return 'لا توجد بيانات كافية بعد.';
-    return sorted.map((item, index) => `${index + 1}. <@${item[0]}> ⎯ ${item[1]} دقيقة`).join('\n');
+    return sorted.map((item, index) => `${index + 1}. <@${item[0]}> ⎯ ${item[1]}`).join('\n');
 }
 
-// تصميم الكارت بالصورة المطلوبة (يوزر الشخص + رصيده + عدد الرولات المشتراة + أفتار الشخص)
-async function generateProfileCard(member) {
-    if (!createCanvas) return null;
-    const canvas = createCanvas(700, 320);
-    const ctx = canvas.getContext('2d');
-
-    ctx.fillStyle = '#161917';
-    ctx.beginPath();
-    ctx.roundRect(0, 0, 700, 320, 24);
-    ctx.fill();
-
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 36px sans-serif';
-    ctx.textAlign = 'right';
-    ctx.fillText(member.user.username, 650, 65);
-
-    ctx.strokeStyle = '#3e5c4a';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(420, 85);
-    ctx.lineTo(650, 85);
-    ctx.stroke();
-
-    ctx.textAlign = 'right';
-    ctx.fillStyle = '#8c9892';
-    ctx.font = '20px sans-serif';
-    ctx.fillText('الرصيد الحالي', 650, 130);
-
-    const userCoins = db.coins.get(member.id) || 0;
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 28px sans-serif';
-    ctx.fillText(`${userCoins} Coins`, 650, 170);
-
-    ctx.fillStyle = '#8c9892';
-    ctx.font = '20px sans-serif';
-    ctx.fillText('إجمالي المشتريات', 650, 230);
-
-    const totalPurchases = db.purchases.get(member.id) || 0;
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 26px sans-serif';
-    ctx.fillText(`${totalPurchases} منتج`, 650, 270);
-
-    const avatarUrl = member.user.displayAvatarURL({ extension: 'png', size: 256 });
-    try {
-        const avatar = await loadImage(avatarUrl);
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(120, 160, 80, 0, Math.PI * 2, true);
-        ctx.closePath();
-        ctx.clip();
-        ctx.drawImage(avatar, 40, 80, 160, 160);
-        ctx.restore();
-
-        ctx.strokeStyle = '#3e5c4a';
-        ctx.lineWidth = 6;
-        ctx.beginPath();
-        ctx.arc(120, 160, 80, 0, Math.PI * 2, true);
-        ctx.stroke();
-    } catch (e) {
-        console.error('Error loading avatar:', e);
-    }
-
-    return new AttachmentBuilder(canvas.toBuffer('image/png'), { name: 'profile-card.png' });
-}
-
-// بناء أزرار القائمة (أول 25 رول مع زر "المزيد" إذا تجاوزت)
-function getRoleMenuComponents(page = 1, member) {
-    const ITEMS_PER_PAGE = 24;
-    const startIndex = (page - 1) * ITEMS_PER_PAGE;
-    const endIndex = startIndex + ITEMS_PER_PAGE;
-    const pageRoles = ROLE_HIERARCHY.slice(startIndex, endIndex);
-
-    const buttons = pageRoles.map((roleId, idx) => {
-        const absoluteIndex = startIndex + idx;
-        const role = member.guild.roles.cache.get(roleId);
-        const roleName = role ? role.name : `رول ${absoluteIndex + 1}`;
-        
-        return new ButtonBuilder()
-            .setCustomId(`buy_role_${absoluteIndex}`)
-            .setLabel(roleName.slice(0, 80))
-            .setStyle(ButtonStyle.Secondary);
-    });
-
-    const actionRows = [];
-    for (let i = 0; i < buttons.length; i += 5) {
-        actionRows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
-    }
-
-    // زر المزيد إذا كان هناك المزيد من الرولات
-    if (ROLE_HIERARCHY.length > endIndex) {
-        const extraRow = new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId(`roles_page_${page + 1}`)
-                .setLabel('المزيد')
-                .setStyle(ButtonStyle.Primary)
-        );
-        actionRows.push(extraRow);
-    } else if (page > 1) {
-        const extraRow = new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId(`roles_page_${page - 1}`)
-                .setLabel('الصفحة السابقة')
-                .setStyle(ButtonStyle.Primary)
-        );
-        actionRows.push(extraRow);
-    }
-
-    return actionRows;
-}
-
+// معالجة الأزرار
 client.on('interactionCreate', async interaction => {
     if (interaction.isButton()) {
-        // رسالة من مجهول (فتح مودال للإرسال بالخاص)
-        if (interaction.customId === 'send_anonymous_msg') {
-            const modal = new ModalBuilder()
-                .setCustomId('anonymous_modal')
-                .setTitle('إرسال رسالة من مجهول');
+        if (interaction.customId === 'my_stats_txt') {
+            await interaction.deferReply({ ephemeral: true });
+            const userId = interaction.user.id;
+            
+            const allWords = db.words.get(userId) || 0;
+            const msgToday = db.dailyMessages.get(userId) || 0;
+            
+            const sortedWords = [...db.words.entries()].filter(([id]) => !db.bannedUsers.has(id)).sort((a, b) => b[1] - a[1]);
+            const rank = sortedWords.findIndex(item => item[0] === userId) + 1 || sortedWords.length + 1;
 
-            const textInput = new TextInputBuilder()
-                .setCustomId('anonymous_text')
-                .setLabel('اكتب رسالتك السرية هنا')
-                .setStyle(TextInputStyle.Paragraph)
-                .setRequired(true);
+            const embed = new EmbedBuilder()
+                .setTitle('My Message Stats')
+                .setColor('#1e1f22')
+                .setDescription(`all messages server ${allWords}\nmessages this day ${msgToday}\n#rank ${rank}`);
 
-            modal.addComponents(new ActionRowBuilder().addComponents(textInput));
-            await interaction.showModal(modal);
-            return;
+            await interaction.editReply({ embeds: [embed] });
         }
 
-        // عرض قائمة الرولات
-        if (interaction.customId === 'coins_buy_roles' || interaction.customId.startsWith('roles_page_')) {
-            let page = 1;
-            if (interaction.customId.startsWith('roles_page_')) {
-                page = parseInt(interaction.customId.split('_')[2]);
+        // عند الضغط على زر رسالة من مجهول -> التحقق من الكولداون (5 دقائق)
+        if (interaction.customId === 'anonymous_msg_btn') {
+            const userId = interaction.user.id;
+            const now = Date.now();
+            const cooldownTime = 5 * 60 * 1000; 
+            const lastTime = db.cooldowns.get(userId) || 0;
+
+            if (now - lastTime < cooldownTime) {
+                const expirationTimestamp = Math.floor((lastTime + cooldownTime) / 1000);
+                await interaction.reply({
+                    content: `لازم تنتظر <t:${expirationTimestamp}:R>`,
+                    ephemeral: true
+                });
+                return;
             }
 
-            const member = interaction.member;
-            const components = getRoleMenuComponents(page, member);
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('reveal_identity').setLabel('كشف الهوية').setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder().setCustomId('hide_identity').setLabel('إخفاء الهوية').setStyle(ButtonStyle.Secondary)
+            );
 
             await interaction.reply({
-                content: `اختر الرول المطلوب شراؤه (الصفحة ${page}):`,
-                components: components,
+                components: [row],
                 ephemeral: true
             });
-            return;
         }
 
-        // شراء رول معين عبر الزر
-        if (interaction.customId.startsWith('buy_role_')) {
-            const roleIndex = parseInt(interaction.customId.split('_')[2]);
-            const selectedRoleId = ROLE_HIERARCHY[roleIndex];
-            const member = interaction.member;
+        // عند اختيار كشف أو إخفاء الهوية
+        if (interaction.customId === 'reveal_identity' || interaction.customId === 'hide_identity') {
+            const userId = interaction.user.id;
+            db.cooldowns.set(userId, Date.now());
 
-            // التحقق من الشراء بالترتيب
-            for (let i = 0; i < roleIndex; i++) {
-                if (!member.roles.cache.has(ROLE_HIERARCHY[i])) {
-                    await interaction.reply({
-                        content: 'عذراً، لا يمكنك شراء هذا الرول لأنك لم تشتري الرولات التي قبله بالترتيب!',
+            const isReveal = interaction.customId === 'reveal_identity';
+
+            await interaction.update({
+                content: 'اكتب رسالتك مع المنشن',
+                components: [],
+                ephemeral: true
+            });
+
+            // فتح الشات لاستلام رسالة واحدة
+            const filter = m => m.author.id === userId;
+            const collector = interaction.channel.createMessageCollector({ filter, max: 1, time: 60000 });
+
+            collector.on('collect', async m => {
+                try {
+                    await m.delete().catch(() => {}); // حذف رسالة المستخدم فوراً
+                } catch (err) {}
+
+                // جلب جميع الأشخاص المنشنين
+                const mentionedUsers = m.mentions.users;
+
+                if (mentionedUsers.size === 0) {
+                    await interaction.followUp({
+                        content: 'ما في منشن',
                         ephemeral: true
                     });
                     return;
                 }
-            }
 
-            // التحقق إذا كان يمتلكه بالفعل
-            if (member.roles.cache.has(selectedRoleId)) {
-                await interaction.reply({
-                    content: 'هذا الرول بالفعل عندك!',
+                // تنظيف نص الرسالة: إزالة المنشنات لكي لا تظهر كروابط زرقاء مزعجة تحت كلمة "الرسالة :"
+                let cleanContent = m.content;
+                mentionedUsers.forEach(user => {
+                    cleanContent = cleanContent.replace(new RegExp(`<@!?${user.id}>`, 'g'), '').trim();
+                });
+
+                // تحديد شكل اسم الراسل في الأسفل (بدون منشن تفاعلي أزرق، أو اسم صريح إذا كان كشف هوية)
+                const senderMember = await m.guild.members.fetch(userId).catch(() => null);
+                const senderName = senderMember ? senderMember.user.tag : 'مستخدم';
+                const senderDisplay = isReveal ? senderName : 'مجهول الهويه';
+
+                const sentTags = [];
+
+                // إرسال الرسالة بالخاص لجميع المنشنين بالشكل المطلوب تماماً
+                for (const [targetId, userObj] of mentionedUsers) {
+                    if (userObj.bot) continue;
+
+                    try {
+                        await userObj.send(`عندك رسالة من مجهول\nالرسالة : ${cleanContent}\nالراسل : ${senderDisplay}`);
+                        sentTags.push(`<@${targetId}>`);
+                    } catch (err) {
+                        console.log(`Could not send DM to ${userObj.tag}`);
+                    }
+                }
+
+                if (sentTags.length === 0) {
+                    await interaction.followUp({
+                        content: 'ما في منشن',
+                        ephemeral: true
+                    });
+                    return;
+                }
+
+                // إشعار المرسل بنجاح الإرسال
+                await interaction.followUp({
+                    content: `تم ارسال الرساله الى ${sentTags.join(', ')}`,
                     ephemeral: true
                 });
-                return;
-            }
-
-            const userCoins = db.coins.get(member.id) || 0;
-            const price = 50;
-
-            if (userCoins < price) {
-                await interaction.reply({
-                    content: `رصيدك غير كافي! تحتاج إلى buy 50 coins (رصيدك الحالي: ${userCoins} كوينز).`,
-                    ephemeral: true
-                });
-                return;
-            }
-
-            try {
-                db.coins.set(member.id, userCoins - price);
-                const currentPurchases = db.purchases.get(member.id) || 0;
-                db.purchases.set(member.id, currentPurchases + 1);
-
-                await member.roles.add(selectedRoleId);
-
-                await interaction.reply({
-                    content: 'تم شراء الرول بنجاح!',
-                    ephemeral: true
-                });
-            } catch (err) {
-                console.error('Error assigning role:', err);
-                await interaction.reply({
-                    content: 'حدث خطأ أثناء محاولة إعطائك الرول.',
-                    ephemeral: true
-                });
-            }
-            return;
-        }
-    }
-
-    // استقبال المودال للرسالة السرية وإرسالها بالخاص
-    if (interaction.isModalSubmit()) {
-        if (interaction.customId === 'anonymous_modal') {
-            const text = interaction.fields.getTextInputValue('anonymous_text');
-            try {
-                await interaction.user.send(`📩 **وصلتك رسالة جديدة من مجهول:**\n> ${text}`);
-                await interaction.reply({ content: 'تم إرسال رسالتك بنجاح إلى الخاص!', ephemeral: true });
-            } catch (e) {
-                await interaction.reply({ content: 'عذراً، لم أستطيع إرسال الرسالة لك بالخاص، تأكد من فتح خاص البوت.', ephemeral: true });
-            }
-            return;
+            });
         }
     }
 });
