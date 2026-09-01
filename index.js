@@ -10,9 +10,8 @@ app.listen(PORT, () => {
     console.log(`Server is listening on port ${PORT}`);
 });
 
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, AttachmentBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, AttachmentBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 
-// محاولة تحميل مكتبة الكانفاس بأمان لمنع انهيار البوت إذا حدثت مشكلة في بيئة الاستضافة
 let createCanvas, loadImage;
 try {
     const canvasModule = require('@napi-rs/canvas');
@@ -35,6 +34,7 @@ const client = new Client({
 const TXT_CHANNEL_ID = '1543093337165144084';
 const VC_CHANNEL_ID = '1543093370065260564';
 const COINS_PANEL_CHANNEL_ID = '1544164140111626300';
+const ANONYMOUS_CHANNEL_ID = '1543113579962835054';
 const EXCLUDED_ROLE_ID = '1535875661997277194';
 
 const ROLE_HIERARCHY = [
@@ -73,6 +73,7 @@ const db = {
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
     await updateLeaderboards();
+    await setupAnonymousPanel();
     setInterval(updateLeaderboards, 30000);
 });
 
@@ -83,11 +84,29 @@ function isExcluded(member) {
     return false;
 }
 
+// تتبع الرسائل والنقاط (كل 5 رسائل = 1 كوين) والأمر "نقاط"
 client.on('messageCreate', async message => {
+    if (message.author.bot) return;
+
+    // روم رسالة من مجهول
+    if (message.channel.id === ANONYMOUS_CHANNEL_ID && !message.system) {
+        // يمكننا ترك الروم نظيفاً أو حذف رسائل المستخدم العادية لتظهر اللوحة فقط
+    }
+
     if (isExcluded(message.member)) return;
     const userId = message.author.id;
-    const wordCount = message.content.trim().split(/\s+/).length;
+    const content = message.content.trim();
 
+    // أمر "نقاط" أو "نقاطي"
+    if (content === 'نقاط' || content === 'نقاطي') {
+        const attachment = await generateProfileCard(message.member);
+        if (attachment) {
+            await message.reply({ files: [attachment] }).catch(() => {});
+        }
+        return;
+    }
+
+    const wordCount = content.split(/\s+/).length;
     db.messages.set(userId, (db.messages.get(userId) || 0) + 1);
     db.words.set(userId, (db.words.get(userId) || 0) + wordCount);
 
@@ -100,26 +119,49 @@ client.on('messageCreate', async message => {
     }
 });
 
+// تتبع الفويس (كل دقيقة = نقطة صوتية)
+client.on('voiceStateUpdate', (oldState, newState) => {
+    const member = newState.member || oldState.member;
+    if (isExcluded(member)) return;
+
+    if (!oldState.channelId && newState.channelId) {
+        member.voiceJoinTime = Date.now();
+    } else if (oldState.channelId && !newState.channelId && member.voiceJoinTime) {
+        const durationMins = Math.floor((Date.now() - member.voiceJoinTime) / 60000);
+        if (durationMins > 0) {
+            const userId = member.id;
+            db.voiceMinutes.set(userId, (db.voiceMinutes.get(userId) || 0) + durationMins);
+        }
+        member.voiceJoinTime = null;
+    } else if (oldState.channelId && newState.channelId && oldState.channelId !== newState.channelId) {
+        if (member.voiceJoinTime) {
+            const durationMins = Math.floor((Date.now() - member.voiceJoinTime) / 60000);
+            if (durationMins > 0) {
+                const userId = member.id;
+                db.voiceMinutes.set(userId, (db.voiceMinutes.get(userId) || 0) + durationMins);
+            }
+        }
+        member.voiceJoinTime = Date.now();
+    }
+});
+
+// تحديث التوب فويس والتوب رسائل
 async function updateLeaderboards() {
     try {
-        const txtChannel = await client.channels.fetch(TXT_CHANNEL_ID).catch(() => null);
-        if (txtChannel) {
+        const vcChannel = await client.channels.fetch(VC_CHANNEL_ID).catch(() => null);
+        if (vcChannel) {
             const embed = new EmbedBuilder()
-                .setTitle('Top Messages')
+                .setTitle('Top Voice')
                 .setColor('#1e1f22')
-                .setDescription(getTopMessagesText())
+                .setDescription(getTopVoiceText())
                 .setFooter({ text: 'Updated recently' });
 
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('my_stats_txt').setLabel('My Stats').setStyle(ButtonStyle.Secondary)
-            );
-
-            const messages = await txtChannel.messages.fetch({ limit: 10 }).catch(() => null);
+            const messages = await vcChannel.messages.fetch({ limit: 10 }).catch(() => null);
             if (messages) {
                 const botMessage = messages.find(m => m.author.id === client.user.id);
                 if (botMessage) await botMessage.delete().catch(() => {});
             }
-            await txtChannel.send({ embeds: [embed], components: [row] });
+            await vcChannel.send({ embeds: [embed] });
         }
 
         const coinsPanelChannel = await client.channels.fetch(COINS_PANEL_CHANNEL_ID).catch(() => null);
@@ -130,7 +172,7 @@ async function updateLeaderboards() {
             const embed = new EmbedBuilder()
                 .setTitle('Coins Panel')
                 .setColor('#1e1f22')
-                .setDescription('هنا يقدر العضو إدارة نقاطه وشراء الرولات بالترتيب وبشكل منظم');
+                .setDescription('اضغط على الزر بالأسفل لعرض قائمة الرولات المتاحة للشراء.');
 
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('coins_buy_roles').setLabel('شراء الرولات').setStyle(ButtonStyle.Secondary)
@@ -147,12 +189,39 @@ async function updateLeaderboards() {
     }
 }
 
-function getTopMessagesText() {
-    const sorted = [...db.words.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
-    if (sorted.length === 0) return 'لا توجد بيانات كافية بعد.';
-    return sorted.map((item, index) => `${index + 1}. <@${item[0]}> ⎯ ${item[1]}`).join('\n');
+async function setupAnonymousPanel() {
+    try {
+        const anonChannel = await client.channels.fetch(ANONYMOUS_CHANNEL_ID).catch(() => null);
+        if (anonChannel) {
+            const messages = await anonChannel.messages.fetch({ limit: 10 }).catch(() => null);
+            const botMessage = messages ? messages.find(m => m.author.id === client.user.id) : null;
+
+            const embed = new EmbedBuilder()
+                .setTitle('اكتب رسالتك بسرية تامة وكل شي محفوط هنا')
+                .setColor('#1e1f22');
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('send_anonymous_msg').setLabel('رسالة من مجهول').setStyle(ButtonStyle.Secondary)
+            );
+
+            if (botMessage) {
+                await botMessage.edit({ embeds: [embed], components: [row] }).catch(() => {});
+            } else {
+                await anonChannel.send({ embeds: [embed], components: [row] });
+            }
+        }
+    } catch (err) {
+        console.error('Error in setupAnonymousPanel:', err);
+    }
 }
 
+function getTopVoiceText() {
+    const sorted = [...db.voiceMinutes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+    if (sorted.length === 0) return 'لا توجد بيانات كافية بعد.';
+    return sorted.map((item, index) => `${index + 1}. <@${item[0]}> ⎯ ${item[1]} دقيقة`).join('\n');
+}
+
+// تصميم الكارت بالصورة المطلوبة (يوزر الشخص + رصيده + عدد الرولات المشتراة + أفتار الشخص)
 async function generateProfileCard(member) {
     if (!createCanvas) return null;
     const canvas = createCanvas(700, 320);
@@ -217,85 +286,109 @@ async function generateProfileCard(member) {
     return new AttachmentBuilder(canvas.toBuffer('image/png'), { name: 'profile-card.png' });
 }
 
-client.on('interactionCreate', async interaction => {
-    if (interaction.isButton()) {
-        if (interaction.customId === 'my_stats_txt') {
-            await interaction.deferReply({ ephemeral: true });
-            const attachment = await generateProfileCard(interaction.member);
-            if (attachment) {
-                await interaction.editReply({ files: [attachment] });
-            } else {
-                await interaction.editReply({ content: 'عذراً، حدث خطأ أثناء توليد الكارت.' });
-            }
-        }
+// بناء أزرار القائمة (أول 25 رول مع زر "المزيد" إذا تجاوزت)
+function getRoleMenuComponents(page = 1, member) {
+    const ITEMS_PER_PAGE = 24;
+    const startIndex = (page - 1) * ITEMS_PER_PAGE;
+    const endIndex = startIndex + ITEMS_PER_PAGE;
+    const pageRoles = ROLE_HIERARCHY.slice(startIndex, endIndex);
 
-        if (interaction.customId === 'coins_buy_roles') {
-            const member = interaction.member;
-            const userCoins = db.coins.get(member.id) || 0;
+    const buttons = pageRoles.map((roleId, idx) => {
+        const absoluteIndex = startIndex + idx;
+        const role = member.guild.roles.cache.get(roleId);
+        const roleName = role ? role.name : `رول ${absoluteIndex + 1}`;
+        
+        return new ButtonBuilder()
+            .setCustomId(`buy_role_${absoluteIndex}`)
+            .setLabel(roleName.slice(0, 80))
+            .setStyle(ButtonStyle.Secondary);
+    });
 
-            let currentTargetIndex = 0;
-            for (let i = 0; i < ROLE_HIERARCHY.length; i++) {
-                if (!member.roles.cache.has(ROLE_HIERARCHY[i])) {
-                    currentTargetIndex = i;
-                    break;
-                }
-                if (i === ROLE_HIERARCHY.length - 1) {
-                    currentTargetIndex = ROLE_HIERARCHY.length;
-                }
-            }
-
-            const selectMenuOptions = ROLE_HIERARCHY.map((roleId, index) => {
-                const hasRole = member.roles.cache.has(roleId);
-                let labelStatus = `رول رقم ${index + 1} (50 كوينز)`;
-                if (hasRole) {
-                    labelStatus = `[ممتلك] رول رقم ${index + 1}`;
-                } else if (index > currentTargetIndex) {
-                    labelStatus = `[مغلق بالترتيب] رول رقم ${index + 1}`;
-                }
-
-                return {
-                    label: labelStatus.slice(0, 100),
-                    value: roleId,
-                    description: `تكلفة الشراء: 50 كوينز`,
-                };
-            });
-
-            const selectMenu = new StringSelectMenuBuilder()
-                .setCustomId('role_purchase_menu')
-                .setPlaceholder('اختر الرول المطلوب شراؤه بالترتيب...')
-                .addOptions(selectMenuOptions.slice(0, 25));
-
-            const row = new ActionRowBuilder().addComponents(selectMenu);
-
-            await interaction.reply({
-                content: `رصيدك الحالي: **${userCoins}** كوينز.\nملاحظة: يجب شراء الرولات بالترتيب التصاعدي وكل رول بـ 50 كوينز.`,
-                components: [row],
-                ephemeral: true
-            });
-        }
+    const actionRows = [];
+    for (let i = 0; i < buttons.length; i += 5) {
+        actionRows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
     }
 
-    if (interaction.isStringSelectMenu()) {
-        if (interaction.customId === 'role_purchase_menu') {
+    // زر المزيد إذا كان هناك المزيد من الرولات
+    if (ROLE_HIERARCHY.length > endIndex) {
+        const extraRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`roles_page_${page + 1}`)
+                .setLabel('المزيد')
+                .setStyle(ButtonStyle.Primary)
+        );
+        actionRows.push(extraRow);
+    } else if (page > 1) {
+        const extraRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`roles_page_${page - 1}`)
+                .setLabel('الصفحة السابقة')
+                .setStyle(ButtonStyle.Primary)
+        );
+        actionRows.push(extraRow);
+    }
+
+    return actionRows;
+}
+
+client.on('interactionCreate', async interaction => {
+    if (interaction.isButton()) {
+        // رسالة من مجهول (فتح مودال للإرسال بالخاص)
+        if (interaction.customId === 'send_anonymous_msg') {
+            const modal = new ModalBuilder()
+                .setCustomId('anonymous_modal')
+                .setTitle('إرسال رسالة من مجهول');
+
+            const textInput = new TextInputBuilder()
+                .setCustomId('anonymous_text')
+                .setLabel('اكتب رسالتك السرية هنا')
+                .setStyle(TextInputStyle.Paragraph)
+                .setRequired(true);
+
+            modal.addComponents(new ActionRowBuilder().addComponents(textInput));
+            await interaction.showModal(modal);
+            return;
+        }
+
+        // عرض قائمة الرولات
+        if (interaction.customId === 'coins_buy_roles' || interaction.customId.startsWith('roles_page_')) {
+            let page = 1;
+            if (interaction.customId.startsWith('roles_page_')) {
+                page = parseInt(interaction.customId.split('_')[2]);
+            }
+
             const member = interaction.member;
-            const selectedRoleId = interaction.values[0];
-            const roleIndex = ROLE_HIERARCHY.indexOf(selectedRoleId);
+            const components = getRoleMenuComponents(page, member);
 
-            if (roleIndex === -1) return;
+            await interaction.reply({
+                content: `اختر الرول المطلوب شراؤه (الصفحة ${page}):`,
+                components: components,
+                ephemeral: true
+            });
+            return;
+        }
 
+        // شراء رول معين عبر الزر
+        if (interaction.customId.startsWith('buy_role_')) {
+            const roleIndex = parseInt(interaction.customId.split('_')[2]);
+            const selectedRoleId = ROLE_HIERARCHY[roleIndex];
+            const member = interaction.member;
+
+            // التحقق من الشراء بالترتيب
             for (let i = 0; i < roleIndex; i++) {
                 if (!member.roles.cache.has(ROLE_HIERARCHY[i])) {
                     await interaction.reply({
-                        content: 'عذراً، لا يمكنك شراء هذا الرول قبل شراء الرولات التي قبله بالترتيب!',
+                        content: 'عذراً، لا يمكنك شراء هذا الرول لأنك لم تشتري الرولات التي قبله بالترتيب!',
                         ephemeral: true
                     });
                     return;
                 }
             }
 
+            // التحقق إذا كان يمتلكه بالفعل
             if (member.roles.cache.has(selectedRoleId)) {
                 await interaction.reply({
-                    content: 'أنت تمتلك هذا الرول بالفعل!',
+                    content: 'هذا الرول بالفعل عندك!',
                     ephemeral: true
                 });
                 return;
@@ -306,7 +399,7 @@ client.on('interactionCreate', async interaction => {
 
             if (userCoins < price) {
                 await interaction.reply({
-                    content: `رصيدك غير كافي! تحتاج إلى ${price} كوينز لشراء هذا الرول (رصيدك الحالي: ${userCoins} كوينز).`,
+                    content: `رصيدك غير كافي! تحتاج إلى buy 50 coins (رصيدك الحالي: ${userCoins} كوينز).`,
                     ephemeral: true
                 });
                 return;
@@ -320,16 +413,31 @@ client.on('interactionCreate', async interaction => {
                 await member.roles.add(selectedRoleId);
 
                 await interaction.reply({
-                    content: `تم شراء الرول بنجاح! تم خصم ${price} كوينز من رصيدك.`,
+                    content: 'تم شراء الرول بنجاح!',
                     ephemeral: true
                 });
             } catch (err) {
                 console.error('Error assigning role:', err);
                 await interaction.reply({
-                    content: 'حدث خطأ أثناء محاولة إعطائك الرول، تأكد من صلاحيات البوت.',
+                    content: 'حدث خطأ أثناء محاولة إعطائك الرول.',
                     ephemeral: true
                 });
             }
+            return;
+        }
+    }
+
+    // استقبال المودال للرسالة السرية وإرسالها بالخاص
+    if (interaction.isModalSubmit()) {
+        if (interaction.customId === 'anonymous_modal') {
+            const text = interaction.fields.getTextInputValue('anonymous_text');
+            try {
+                await interaction.user.send(`📩 **وصلتك رسالة جديدة من مجهول:**\n> ${text}`);
+                await interaction.reply({ content: 'تم إرسال رسالتك بنجاح إلى الخاص!', ephemeral: true });
+            } catch (e) {
+                await interaction.reply({ content: 'عذراً، لم أستطيع إرسال الرسالة لك بالخاص، تأكد من فتح خاص البوت.', ephemeral: true });
+            }
+            return;
         }
     }
 });
