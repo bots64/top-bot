@@ -10,7 +10,7 @@ app.listen(PORT, () => {
     console.log(`Server is listening on port ${PORT}`);
 });
 
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 
 const client = new Client({
     intents: [
@@ -37,7 +37,6 @@ const db = {
     bannedUsers: new Set()     
 };
 
-// تصفير البيانات كل 30 يوم
 const RESET_INTERVAL = 30 * 24 * 60 * 60 * 1000;
 setInterval(() => {
     db.messages.clear();
@@ -68,16 +67,14 @@ client.on('messageCreate', async message => {
 
     const content = message.content.trim();
 
-    // التحقق من الأوامر الإدارية (rest chat, rest voice, اعطاء, سحب, leve, come)
+    // الأوامر الإدارية
     if (content.startsWith('rest chat') || content.startsWith('rest voice') || content.startsWith('اعطاء') || content.startsWith('سحب') || content.startsWith('leve ') || content.startsWith('come ')) {
         
-        // التحقق الدقيق من الرول المخصص فقط
         if (!message.member.roles.cache.has(ADMIN_ROLE_ID)) {
             await message.react('❌').catch(() => {});
             return;
         }
 
-        // أمر rest chat
         if (content === 'rest chat') {
             db.messages.clear();
             db.dailyMessages.clear();
@@ -86,7 +83,6 @@ client.on('messageCreate', async message => {
             return;
         }
 
-        // أمر rest voice
         if (content === 'rest voice') {
             db.voiceMinutes.clear();
             db.dailyVoice.clear();
@@ -95,7 +91,6 @@ client.on('messageCreate', async message => {
             return;
         }
 
-        // أمر leve (إبعاد من التوب)
         if (content.startsWith('leve ')) {
             const targetMember = message.mentions.members.first();
             if (!targetMember) {
@@ -108,7 +103,6 @@ client.on('messageCreate', async message => {
             return;
         }
 
-        // أمر come (إرجاع للتوب)
         if (content.startsWith('come ')) {
             const targetMember = message.mentions.members.first();
             if (!targetMember) {
@@ -121,7 +115,6 @@ client.on('messageCreate', async message => {
             return;
         }
 
-        // أمر اعطاء (يدعم اعطاء [رقم] @منشن أو اعطاء [رقم] chat/voice @منشن)
         if (content.startsWith('اعطاء')) {
             const targetMember = message.mentions.members.first();
             if (!targetMember) {
@@ -136,29 +129,16 @@ client.on('messageCreate', async message => {
                 return;
             }
 
-            const isVoice = content.includes('voice');
-            const isChat = content.includes('chat') || (!isVoice); // افتراضي أو صريح للشات والفويس معاً إذا لم يحدد، أو حددها حسب الطلب (الطلب: يعطيني 1000 نقطه بالشات والفويس)
-
-            if (content.includes('voice')) {
-                const currentVoice = db.voiceMinutes.get(targetMember.id) || 0;
-                db.voiceMinutes.set(targetMember.id, currentVoice + amount);
-            } else if (content.includes('chat')) {
-                const currentMsg = db.messages.get(targetMember.id) || 0;
-                db.messages.set(targetMember.id, currentMsg + amount);
-            } else {
-                // إذا كتب "اعطاء 1000 @منشن" بدون تحديد، يضيف للشات والفويس معاً أو حسب ما طلبت
-                const currentMsg = db.messages.get(targetMember.id) || 0;
-                db.messages.set(targetMember.id, currentMsg + amount);
-                const currentVoice = db.voiceMinutes.get(targetMember.id) || 0;
-                db.voiceMinutes.set(targetMember.id, currentVoice + amount);
-            }
+            const currentMsg = db.messages.get(targetMember.id) || 0;
+            db.messages.set(targetMember.id, currentMsg + amount);
+            const currentVoice = db.voiceMinutes.get(targetMember.id) || 0;
+            db.voiceMinutes.set(targetMember.id, currentVoice + amount);
 
             await updateLeaderboards();
             await message.react('✅').catch(() => {});
             return;
         }
 
-        // أمر سحب
         if (content.startsWith('سحب')) {
             const targetMember = message.mentions.members.first();
             if (!targetMember) {
@@ -180,25 +160,23 @@ client.on('messageCreate', async message => {
             }
 
             db.messages.set(targetMember.id, currentMsg - amount);
+            const currentVoice = db.voiceMinutes.get(targetMember.id) || 0;
+            if (currentVoice >= amount) {
+                db.voiceMinutes.set(targetMember.id, currentVoice - amount);
+            }
             await updateLeaderboards();
             await message.react('✅').catch(() => {});
             return;
         }
     }
 
-    // استبعاد رسائل الروم الصوتي (Text-in-Voice channels تحتوي على thread أو channel مرتبط بفويس)
-    if (message.channel.isThread() || message.channel.rateLimitPerUser !== undefined && message.channel.parent && message.channel.parent.type === 2) {
-        // إذا كانت القناة تابعة لروم صوتي أو شات داخل فويس، لا نحسبها
-        return;
-    }
-    // احتياطياً: إذا كانت القناة مصنفة كفويس أو تحتوي على خاصية voice
-    if (message.channel.type === 11 || message.channel.type === 12) return; // Threads
+    // منع احتساب رسائل شات الروم الصوتي (Text-in-Voice)
+    if (message.channel.isThread() || message.channel.type === 11 || message.channel.type === 12) return;
+    if (message.channel.parent && message.channel.parent.type === 2) return;
 
     if (isExcluded(message.member)) return;
     
     const userId = message.author.id;
-
-    // كل رسالة = 1 نقطة
     db.messages.set(userId, (db.messages.get(userId) || 0) + 1);
     db.dailyMessages.set(userId, (db.dailyMessages.get(userId) || 0) + 1);
 });
@@ -212,12 +190,9 @@ client.on('voiceStateUpdate', (oldState, newState) => {
 
     const userId = member.id;
 
-    // إذا دخل أي روم صوتي ولم يكن في روم من قبل
     if (!oldState.channelId && newState.channelId) {
         voiceTimers.set(userId, Date.now());
-    } 
-    // إذا خرج تماماً من الرومات الصوتية
-    else if (oldState.channelId && !newState.channelId) {
+    } else if (oldState.channelId && !newState.channelId) {
         const joinTime = voiceTimers.get(userId);
         if (joinTime) {
             const durationMins = Math.floor((Date.now() - joinTime) / 60000);
@@ -230,14 +205,12 @@ client.on('voiceStateUpdate', (oldState, newState) => {
     }
 });
 
-// عداد دوري لاحتساب الدقائق لمن هم متواجدين بالفويس كل دقيقة تلقائياً
 setInterval(() => {
     for (const [userId, joinTime] of voiceTimers.entries()) {
         const durationMins = Math.floor((Date.now() - joinTime) / 60000);
         if (durationMins >= 1) {
             db.voiceMinutes.set(userId, (db.voiceMinutes.get(userId) || 0) + 1);
             db.dailyVoice.set(userId, (db.dailyVoice.get(userId) || 0) + 1);
-            // تحديث وقت البداية لدقيقة جديدة لتجنب التكرار المضاعف
             voiceTimers.set(userId, Date.now());
         }
     }
@@ -245,7 +218,6 @@ setInterval(() => {
 
 async function updateLeaderboards() {
     try {
-        // 1. تحديث توب الشات
         const txtChannel = await client.channels.fetch(TXT_CHANNEL_ID).catch(() => null);
         if (txtChannel) {
             const embed = new EmbedBuilder()
@@ -266,7 +238,6 @@ async function updateLeaderboards() {
             await txtChannel.send({ embeds: [embed], components: [row] });
         }
 
-        // 2. تحديث توب الفويس
         const vcChannel = await client.channels.fetch(VC_CHANNEL_ID).catch(() => null);
         if (vcChannel) {
             const embed = new EmbedBuilder()
@@ -283,7 +254,6 @@ async function updateLeaderboards() {
             await vcChannel.send({ embeds: [embed] });
         }
 
-        // 3. رسالة مجهول
         const anonChannel = await client.channels.fetch(ANON_CHANNEL_ID).catch(() => null);
         if (anonChannel) {
             const messages = await anonChannel.messages.fetch({ limit: 5 }).catch(() => null);
@@ -292,7 +262,7 @@ async function updateLeaderboards() {
             if (!botMessage) {
                 const embed = new EmbedBuilder()
                     .setColor('#1e1f22')
-                    .setDescription('اكتب رسالتك بسرية تامة\nوكل شي محفوظ هنا');
+                    .setDescription('اكتب رسالتك بسرية تامة وكل شي محفوظ هنا');
 
                 const row = new ActionRowBuilder().addComponents(
                     new ButtonBuilder().setCustomId('anonymous_msg_btn').setLabel('رسالة من مجهول').setStyle(ButtonStyle.Secondary)
@@ -318,7 +288,7 @@ function getTopVoiceText() {
     return sorted.map((item, index) => `${index + 1}. <@${item[0]}> ⎯ ${item[1]}`).join('\n');
 }
 
-// معالجة الأزرار (My Stats)
+// معالجة الأزرار والـ Modals
 client.on('interactionCreate', async interaction => {
     if (interaction.isButton()) {
         if (interaction.customId === 'my_stats_txt') {
@@ -355,8 +325,8 @@ client.on('interactionCreate', async interaction => {
             }
 
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('reveal_identity').setLabel('كشف الهوية').setStyle(ButtonStyle.Secondary),
-                new ButtonBuilder().setCustomId('hide_identity').setLabel('إخفاء الهوية').setStyle(ButtonStyle.Secondary)
+                new ButtonBuilder().setCustomId('hide_identity').setLabel('اخفاء الهويه').setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder().setCustomId('reveal_identity').setLabel('اظهار الهويه').setStyle(ButtonStyle.Secondary)
             );
 
             await interaction.reply({
@@ -365,57 +335,106 @@ client.on('interactionCreate', async interaction => {
             });
         }
 
-        if (interaction.customId === 'reveal_identity' || interaction.customId === 'hide_identity') {
+        if (interaction.customId === 'hide_identity' || interaction.customId === 'reveal_identity') {
+            const isReveal = interaction.customId === 'reveal_identity';
+            const modalId = isReveal ? 'modal_reveal' : 'modal_hide';
+
+            const modal = new ModalBuilder()
+                .setCustomId(modalId)
+                .setTitle('رسالة من مجهول');
+
+            const targetInput = new TextInputBuilder()
+                .setCustomId('target_user')
+                .setLabel('اكتب يوزر الشخص المراد إرسال الرسالة إليه')
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder('منشن الشخص أو ايديه أو يوزره')
+                .setRequired(true);
+
+            const msgInput = new TextInputBuilder()
+                .setCustomId('message_content')
+                .setLabel('اكتب رسالتك بسرية')
+                .setStyle(TextInputStyle.Paragraph)
+                .setPlaceholder('اكتب رسالتك هنا...')
+                .setRequired(true);
+
+            modal.addComponents(
+                new ActionRowBuilder().addComponents(targetInput),
+                new ActionRowBuilder().addComponents(msgInput)
+            );
+
+            await interaction.showModal(modal);
+        }
+    } else if (interaction.isModalSubmit()) {
+        if (interaction.customId === 'modal_hide' || interaction.customId === 'modal_reveal') {
+            await interaction.deferReply({ ephemeral: true });
             const userId = interaction.user.id;
             db.cooldowns.set(userId, Date.now());
 
-            const isReveal = interaction.customId === 'reveal_identity';
+            const isReveal = interaction.customId === 'modal_reveal';
+            const rawTargetInput = interaction.fields.getTextInputValue('target_user').trim();
+            const messageText = interaction.fields.getTextInputValue('message_content').trim();
 
-            await interaction.update({
-                content: 'اكتب رسالتك مع المنشن',
-                components: [],
-                ephemeral: true
-            });
+            // استخراج جميع المنشنات أو الأيدي أو الأسماء من المدخل (يدعم متعدد)
+            const targetIds = [];
+            const matches = rawTargetInput.matchAll(/<@!?(\d+)>|(\d{17,19})/g);
+            for (const match of matches) {
+                const id = match[1] || match[2];
+                if (id && !targetIds.includes(id)) targetIds.push(id);
+            }
 
-            const filter = m => m.author.id === userId;
-            const collector = interaction.channel.createMessageCollector({ filter, max: 1, time: 60000 });
+            // إذا لم يتم العثور على أيدي صالح عبر المنشن أو الأيدي، نبحث باليوزر أو النيكست
+            if (targetIds.length === 0) {
+                const query = rawTargetInput.replace('@', '').toLowerCase();
+                const members = await interaction.guild.members.fetch().catch(() => null);
+                if (members) {
+                    const found = members.find(m => m.user.username.toLowerCase() === query || (m.nickname && m.nickname.toLowerCase() === query) || m.user.tag.toLowerCase() === query);
+                    if (found) {
+                        targetIds.push(found.id);
+                    }
+                }
+            }
 
-            collector.on('collect', async m => {
+            if (targetIds.length === 0) {
+                await interaction.editReply({ content: 'المنشن غلط ركز' });
+                return;
+            }
+
+            const senderDisplay = isReveal ? `<@${userId}>` : 'مجهول الهوية';
+            const sentTags = [];
+            const notFoundTags = [];
+
+            for (const targetId of targetIds) {
+                const targetMember = await interaction.guild.members.fetch(targetId).catch(() => null);
+                if (!targetMember) {
+                    notFoundTags.push(targetId);
+                    continue;
+                }
+                if (targetMember.user.bot) continue;
+
                 try {
-                    await m.delete().catch(() => {});
-                } catch (err) {}
-
-                const mentionedUsers = m.mentions.users;
-                if (mentionedUsers.size === 0) {
-                    await interaction.followUp({ content: 'ما في منشن', ephemeral: true });
-                    return;
+                    await targetMember.send(`**عندك رسالة من مجهول**\nالرسالة : ${messageText}\nالراسل : ${senderDisplay}`);
+                    sentTags.push(`<@${targetId}>`);
+                } catch (err) {
+                    notFoundTags.push(targetId);
                 }
+            }
 
-                let cleanContent = m.content;
-                mentionedUsers.forEach(user => {
-                    cleanContent = cleanContent.replace(new RegExp(`<@!?${user.id}>`, 'g'), '').trim();
-                });
+            if (sentTags.length === 0 && notFoundTags.length > 0) {
+                await interaction.editReply({ content: 'الشخص غير موجود بالسيرفر' });
+                return;
+            }
 
-                const senderMember = await m.guild.members.fetch(userId).catch(() => null);
-                const senderName = senderMember ? senderMember.user.tag : 'مستخدم';
-                const senderDisplay = isReveal ? senderName : 'مجهول الهويه';
+            if (sentTags.length === 0) {
+                await interaction.editReply({ content: 'المنشن غلط ركز' });
+                return;
+            }
 
-                const sentTags = [];
-                for (const [targetId, userObj] of mentionedUsers) {
-                    if (userObj.bot) continue;
-                    try {
-                        await userObj.send(`عندك رسالة من مجهول\nالرسالة : ${cleanContent}\nالراسل : ${senderDisplay}`);
-                        sentTags.push(`<@${targetId}>`);
-                    } catch (err) {}
-                }
+            let replyMsg = `تم ارسال الرساله الى ${sentTags.join(', ')}`;
+            if (notFoundTags.length > 0) {
+                replyMsg += ` (بعض الأشخاص غير موجودين بالسيرفر أو لا يمكن مراسلتهم)`;
+            }
 
-                if (sentTags.length === 0) {
-                    await interaction.followUp({ content: 'ما في منشن', ephemeral: true });
-                    return;
-                }
-
-                await interaction.followUp({ content: `تم ارسال الرساله الى ${sentTags.join(', ')}`, ephemeral: true });
-            });
+            await interaction.editReply({ content: replyMsg });
         }
     }
 });
