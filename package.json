@@ -1,16 +1,17 @@
 {
   "name": "discord-bot-combined",
   "version": "1.0.0",
-  "description": "Combined Discord Bot with Top stats, Anonymous messages, and AI rooms",
+  "description": "Combined Discord Bot with Top stats, Anonymous messages, and Real AI (Gemini)",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
+    "@google/genai": "^0.1.1",
     "discord.js": "^14.14.1",
     "express": "^4.19.2"
   },
   "engines": {
-    "node": ">=16.9.0"
+    "node": ">=18.0.0"
   }
 }
