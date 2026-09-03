@@ -372,9 +372,9 @@ client.on('interactionCreate', async interaction => {
 
             const targetInput = new TextInputBuilder()
                 .setCustomId('target_user')
-                .setLabel('اكتب يوزر الشخص المراد إرسال الرسالة إليه')
+                .setLabel('اكتب يوزرات الأشخاص (بينهم مسافات)')
                 .setStyle(TextInputStyle.Short)
-                .setPlaceholder('منشن الشخص أو ايديه أو يوزره')
+                .setPlaceholder('منشنات، ايديات، أو يوزرات مفصولة بمسافة')
                 .setRequired(true);
 
             const msgInput = new TextInputBuilder()
@@ -394,76 +394,80 @@ client.on('interactionCreate', async interaction => {
     } else if (interaction.isModalSubmit()) {
         if (interaction.customId === 'modal_hide' || interaction.customId === 'modal_reveal') {
             await interaction.deferReply({ ephemeral: true });
-            const userId = interaction.user.id;
-            db.cooldowns.set(userId, Date.now());
 
             const isReveal = interaction.customId === 'modal_reveal';
             const rawTargetInput = interaction.fields.getTextInputValue('target_user').trim();
             const messageText = interaction.fields.getTextInputValue('message_content').trim();
 
-            const targetIds = [];
+            // فحص وجود رابط سيرفر ديسكورد (Discord Invite Links)
+            const inviteRegex = /(discord\.(gg|com\/invite)\/[a-zA-Z0-9]+|discord\.app\/invite\/[a-zA-Z0-9]+|discord\.me\/[a-zA-Z0-9]+)/i;
+            if (inviteRegex.test(messageText)) {
+                await interaction.editReply({ content: 'لم يتم إرسال الرسالة إلى الشخص أو الأشخاص المطلوبين لأنه يوجد هناك رابط لسيرفر.' });
+                return;
+            }
+
+            const userId = interaction.user.id;
+            db.cooldowns.set(userId, Date.now());
+
+            const targetIds = new Set();
             const matches = rawTargetInput.matchAll(/<@!?(\d+)>|(\d{17,19})/g);
             for (const match of matches) {
                 const id = match[1] || match[2];
-                if (id && !targetIds.includes(id)) targetIds.push(id);
+                if (id) targetIds.add(id);
             }
 
-            if (targetIds.length === 0) {
-                const query = rawTargetInput.replace('@', '').toLowerCase();
-                const members = await interaction.guild.members.fetch().catch(() => null);
-                if (members) {
-                    const found = members.find(m => m.user.username.toLowerCase() === query || (m.nickname && m.nickname.toLowerCase() === query) || m.user.tag.toLowerCase() === query);
+            const tokens = rawTargetInput.split(/\s+/);
+            const members = await interaction.guild.members.fetch().catch(() => null);
+
+            if (members) {
+                for (const token of tokens) {
+                    const cleanToken = token.replace('@', '').toLowerCase();
+                    if (!cleanToken) continue;
+
+                    const found = members.find(m => 
+                        m.user.username.toLowerCase() === cleanToken || 
+                        (m.nickname && m.nickname.toLowerCase() === cleanToken) || 
+                        m.user.tag.toLowerCase() === cleanToken
+                    );
+                    
                     if (found) {
-                        targetIds.push(found.id);
+                        targetIds.add(found.id);
                     }
                 }
             }
 
-            if (targetIds.length === 0) {
-                await interaction.editReply({ content: 'هذا الشخص غير موجود في السيرفر' });
+            if (targetIds.size === 0) {
+                await interaction.editReply({ content: 'هذا الشخص أو الأشخاص غير موجودين في السيرفر' });
                 return;
             }
 
             const senderDisplay = isReveal ? `<@${userId}>` : 'مجهول الهوية';
-            const sentTags = [];
-            const notFoundTags = [];
-
-            const anonChannel = await client.channels.fetch(ANON_CHANNEL_ID).catch(() => null);
+            let sentCount = 0;
+            let notFoundCount = 0;
 
             for (const targetId of targetIds) {
                 const targetMember = interaction.guild.members.cache.get(targetId) || await interaction.guild.members.fetch(targetId).catch(() => null);
-                if (!targetMember) {
-                    notFoundTags.push(targetId);
+                if (!targetMember || targetMember.user.bot) {
+                    notFoundCount++;
                     continue;
                 }
-                if (targetMember.user.bot) continue;
 
-                // إرسال الرسالة للمستلم خاص (DM) بالصيغة المطلوبة تماماً
                 try {
                     await targetMember.send(`**عندك رسالة من مجهول**\nالرسالة : ${messageText}\nالراسل : ${senderDisplay}`);
-                } catch (err) {}
-
-                // إرسال نسخة من الرسالة إلى روم "رسالة من مجهول" المحدد بالصيغة المطلوبة تماماً
-                if (anonChannel) {
-                    await anonChannel.send(`**عندك رسالة من مجهول**\nالرسالة : ${messageText}\nالراسل : ${senderDisplay}`).catch(() => {});
+                    sentCount++;
+                } catch (err) {
+                    notFoundCount++;
                 }
-
-                sentTags.push(`<@${targetId}>`);
             }
 
-            if (sentTags.length === 0 && notFoundTags.length > 0) {
-                await interaction.editReply({ content: 'هذا الشخص غير موجود في السيرفر' });
-                return;
-            }
-
-            if (sentTags.length === 0) {
-                await interaction.editReply({ content: 'هذا الشخص غير موجود في السيرفر' });
+            if (sentCount === 0) {
+                await interaction.editReply({ content: 'هذا الشخص غير موجود في السيرفر أو أن خاصه مغلق' });
                 return;
             }
 
             let replyMsg = `تم إرسال الرسالة إلى الشخص أو الأشخاص المطلوبين`;
-            if (notFoundTags.length > 0) {
-                replyMsg += ` (بعض الأشخاص غير موجودين في السيرفر)`;
+            if (notFoundCount > 0) {
+                replyMsg += ` (بعض الأشخاص لم يتم إرسال الرسالة لهم لعدم وجودهم أو إغلاق الخاص)`;
             }
 
             await interaction.editReply({ content: replyMsg });
