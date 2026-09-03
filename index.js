@@ -37,15 +37,23 @@ const db = {
     bannedUsers: new Set()     
 };
 
-const RESET_INTERVAL = 30 * 24 * 60 * 60 * 1000;
-setInterval(() => {
-    db.messages.clear();
-    db.voiceMinutes.clear();
-    db.dailyMessages.clear();
-    db.dailyVoice.clear();
-    db.bannedUsers.clear();
-    console.log('Leaderboards have been reset automatically for the 30-day cycle.');
-}, RESET_INTERVAL);
+// دالة مساعدة للحصول على تاريخ اليوم بصيغة YYYY-MM-DD لمقارنة تصفير اليوم
+function getTodayDateString() {
+    const now = new Date();
+    return now.toISOString().split('T')[0];
+}
+
+let lastRecordedDate = getTodayDateString();
+
+function checkDailyReset() {
+    const currentDate = getTodayDateString();
+    if (currentDate !== lastRecordedDate) {
+        db.dailyMessages.clear();
+        db.dailyVoice.clear();
+        lastRecordedDate = currentDate;
+        console.log('Daily stats have been reset for the new day.');
+    }
+}
 
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
@@ -65,6 +73,7 @@ function isExcluded(member) {
 client.on('messageCreate', async message => {
     if (message.author.bot || !message.guild) return;
 
+    checkDailyReset();
     const content = message.content.trim();
 
     // الأوامر الإدارية
@@ -170,7 +179,7 @@ client.on('messageCreate', async message => {
         }
     }
 
-    // منع احتساب رسائل شات الروم الصوتي (Text-in-Voice)
+    // استثناء رسائل الرومات الصوتية النصية (Text-in-Voice / Threads) لضمان عدم احتسابها
     if (message.channel.isThread() || message.channel.type === 11 || message.channel.type === 12) return;
     if (message.channel.parent && message.channel.parent.type === 2) return;
 
@@ -181,7 +190,7 @@ client.on('messageCreate', async message => {
     db.dailyMessages.set(userId, (db.dailyMessages.get(userId) || 0) + 1);
 });
 
-// تتبع الفويس (في أي روم صوتي، كل دقيقة = 1 نقطة)
+// تتبع الفويس (كل دقيقة يقضيها المستخدم في الفويس يزيد 1)
 const voiceTimers = new Map();
 
 client.on('voiceStateUpdate', (oldState, newState) => {
@@ -189,6 +198,7 @@ client.on('voiceStateUpdate', (oldState, newState) => {
     if (!member || isExcluded(member)) return;
 
     const userId = member.id;
+    checkDailyReset();
 
     if (!oldState.channelId && newState.channelId) {
         voiceTimers.set(userId, Date.now());
@@ -206,6 +216,7 @@ client.on('voiceStateUpdate', (oldState, newState) => {
 });
 
 setInterval(() => {
+    checkDailyReset();
     for (const [userId, joinTime] of voiceTimers.entries()) {
         const durationMins = Math.floor((Date.now() - joinTime) / 60000);
         if (durationMins >= 1) {
@@ -230,12 +241,20 @@ async function updateLeaderboards() {
                 new ButtonBuilder().setCustomId('my_stats_txt').setLabel('My Stats').setStyle(ButtonStyle.Secondary)
             );
 
-            const messages = await txtChannel.messages.fetch({ limit: 10 }).catch(() => null);
-            if (messages) {
-                const botMessage = messages.find(m => m.author.id === client.user.id);
-                if (botMessage) await botMessage.delete().catch(() => {});
+            const fetchedMessages = await txtChannel.messages.fetch({ limit: 10 }).catch(() => null);
+            if (fetchedMessages) {
+                const botMessage = fetchedMessages.find(m => m.author.id === client.user.id);
+                if (botMessage) {
+                    await botMessage.edit({ embeds: [embed], components: [row] }).catch(async () => {
+                        await botMessage.delete().catch(() => {});
+                        await txtChannel.send({ embeds: [embed], components: [row] });
+                    });
+                } else {
+                    await txtChannel.send({ embeds: [embed], components: [row] });
+                }
+            } else {
+                await txtChannel.send({ embeds: [embed], components: [row] });
             }
-            await txtChannel.send({ embeds: [embed], components: [row] });
         }
 
         const vcChannel = await client.channels.fetch(VC_CHANNEL_ID).catch(() => null);
@@ -246,12 +265,20 @@ async function updateLeaderboards() {
                 .setDescription(getTopVoiceText())
                 .setFooter({ text: 'Updated 30 seconds ago' });
 
-            const messages = await vcChannel.messages.fetch({ limit: 10 }).catch(() => null);
-            if (messages) {
-                const botMessage = messages.find(m => m.author.id === client.user.id);
-                if (botMessage) await botMessage.delete().catch(() => {});
+            const fetchedMessages = await vcChannel.messages.fetch({ limit: 10 }).catch(() => null);
+            if (fetchedMessages) {
+                const botMessage = fetchedMessages.find(m => m.author.id === client.user.id);
+                if (botMessage) {
+                    await botMessage.edit({ embeds: [embed] }).catch(async () => {
+                        await botMessage.delete().catch(() => {});
+                        await vcChannel.send({ embeds: [embed] });
+                    });
+                } else {
+                    await vcChannel.send({ embeds: [embed] });
+                }
+            } else {
+                await vcChannel.send({ embeds: [embed] });
             }
-            await vcChannel.send({ embeds: [embed] });
         }
 
         const anonChannel = await client.channels.fetch(ANON_CHANNEL_ID).catch(() => null);
@@ -293,6 +320,7 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isButton()) {
         if (interaction.customId === 'my_stats_txt') {
             await interaction.deferReply({ ephemeral: true });
+            checkDailyReset();
             const userId = interaction.user.id;
             
             const allMessages = db.messages.get(userId) || 0;
@@ -374,7 +402,6 @@ client.on('interactionCreate', async interaction => {
             const rawTargetInput = interaction.fields.getTextInputValue('target_user').trim();
             const messageText = interaction.fields.getTextInputValue('message_content').trim();
 
-            // استخراج جميع المنشنات أو الأيدي أو الأسماء من المدخل (يدعم متعدد)
             const targetIds = [];
             const matches = rawTargetInput.matchAll(/<@!?(\d+)>|(\d{17,19})/g);
             for (const match of matches) {
@@ -382,7 +409,6 @@ client.on('interactionCreate', async interaction => {
                 if (id && !targetIds.includes(id)) targetIds.push(id);
             }
 
-            // إذا لم يتم العثور على أيدي صالح عبر المنشن أو الأيدي، نبحث باليوزر أو النيكست
             if (targetIds.length === 0) {
                 const query = rawTargetInput.replace('@', '').toLowerCase();
                 const members = await interaction.guild.members.fetch().catch(() => null);
@@ -404,7 +430,7 @@ client.on('interactionCreate', async interaction => {
             const notFoundTags = [];
 
             for (const targetId of targetIds) {
-                const targetMember = await interaction.guild.members.fetch(targetId).catch(() => null);
+                const targetMember = await interaction.guild.members.get(targetId) || await interaction.guild.members.fetch(targetId).catch(() => null);
                 if (!targetMember) {
                     notFoundTags.push(targetId);
                     continue;
