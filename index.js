@@ -37,7 +37,6 @@ const db = {
     bannedUsers: new Set()     
 };
 
-// دالة مساعدة للحصول على تاريخ اليوم بصيغة YYYY-MM-DD لمقارنة تصفير اليوم
 function getTodayDateString() {
     const now = new Date();
     return now.toISOString().split('T')[0];
@@ -69,14 +68,12 @@ function isExcluded(member) {
     return false;
 }
 
-// تتبع الرسائل والشات والأوامر الإدارية
 client.on('messageCreate', async message => {
     if (message.author.bot || !message.guild) return;
 
     checkDailyReset();
     const content = message.content.trim();
 
-    // الأوامر الإدارية
     if (content.startsWith('rest chat') || content.startsWith('rest voice') || content.startsWith('اعطاء') || content.startsWith('سحب') || content.startsWith('leve ') || content.startsWith('come ')) {
         
         if (!message.member.roles.cache.has(ADMIN_ROLE_ID)) {
@@ -179,7 +176,6 @@ client.on('messageCreate', async message => {
         }
     }
 
-    // استثناء رسائل الرومات الصوتية النصية (Text-in-Voice / Threads) لضمان عدم احتسابها
     if (message.channel.isThread() || message.channel.type === 11 || message.channel.type === 12) return;
     if (message.channel.parent && message.channel.parent.type === 2) return;
 
@@ -190,7 +186,6 @@ client.on('messageCreate', async message => {
     db.dailyMessages.set(userId, (db.dailyMessages.get(userId) || 0) + 1);
 });
 
-// تتبع الفويس (كل دقيقة يقضيها المستخدم في الفويس يزيد 1)
 const voiceTimers = new Map();
 
 client.on('voiceStateUpdate', (oldState, newState) => {
@@ -283,18 +278,23 @@ async function updateLeaderboards() {
 
         const anonChannel = await client.channels.fetch(ANON_CHANNEL_ID).catch(() => null);
         if (anonChannel) {
-            const messages = await anonChannel.messages.fetch({ limit: 5 }).catch(() => null);
+            const messages = await anonChannel.messages.fetch({ limit: 10 }).catch(() => null);
             const botMessage = messages ? messages.find(m => m.author.id === client.user.id) : null;
             
-            if (!botMessage) {
-                const embed = new EmbedBuilder()
-                    .setColor('#1e1f22')
-                    .setDescription('اكتب رسالتك بسرية تامة وكل شي محفوظ هنا');
+            const embed = new EmbedBuilder()
+                .setColor('#1e1f22')
+                .setDescription('اكتب رسالتك بسرية تامة وكل شي محفوظ هنا');
 
-                const row = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('anonymous_msg_btn').setLabel('رسالة من مجهول').setStyle(ButtonStyle.Secondary)
-                );
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('anonymous_msg_btn').setLabel('رسالة من مجهول').setStyle(ButtonStyle.Secondary)
+            );
 
+            if (botMessage) {
+                await botMessage.edit({ embeds: [embed], components: [row] }).catch(async () => {
+                    await botMessage.delete().catch(() => {});
+                    await anonChannel.send({ embeds: [embed], components: [row] });
+                });
+            } else {
                 await anonChannel.send({ embeds: [embed], components: [row] });
             }
         }
@@ -315,7 +315,6 @@ function getTopVoiceText() {
     return sorted.map((item, index) => `${index + 1}. <@${item[0]}> ⎯ ${item[1]}`).join('\n');
 }
 
-// معالجة الأزرار والـ Modals
 client.on('interactionCreate', async interaction => {
     if (interaction.isButton()) {
         if (interaction.customId === 'my_stats_txt') {
@@ -429,6 +428,8 @@ client.on('interactionCreate', async interaction => {
             const sentTags = [];
             const notFoundTags = [];
 
+            const anonChannel = await client.channels.fetch(ANON_CHANNEL_ID).catch(() => null);
+
             for (const targetId of targetIds) {
                 const targetMember = await interaction.guild.members.get(targetId) || await interaction.guild.members.fetch(targetId).catch(() => null);
                 if (!targetMember) {
@@ -437,12 +438,22 @@ client.on('interactionCreate', async interaction => {
                 }
                 if (targetMember.user.bot) continue;
 
+                // إرسال الرسالة للمستلم خاص (DM)
                 try {
                     await targetMember.send(`**عندك رسالة من مجهول**\nالرسالة : ${messageText}\nالراسل : ${senderDisplay}`);
-                    sentTags.push(`<@${targetId}>`);
-                } catch (err) {
-                    notFoundTags.push(targetId);
+                } catch (err) {}
+
+                // إرسال نسخة من الرسالة إلى روم رسالة من مجهول المحدد
+                if (anonChannel) {
+                    const embedLog = new EmbedBuilder()
+                        .setTitle('رسالة من مجهول جديدة')
+                        .setColor('#1e1f22')
+                        .setDescription(`**المستلم:** <@${targetId}>\n**الراسل:** ${senderDisplay}\n**الرسالة:**\n${messageText}`);
+                    
+                    await anonChannel.send({ embeds: [embedLog] }).catch(() => {});
                 }
+
+                sentTags.push(`<@${targetId}>`);
             }
 
             if (sentTags.length === 0 && notFoundTags.length > 0) {
@@ -457,7 +468,7 @@ client.on('interactionCreate', async interaction => {
 
             let replyMsg = `تم ارسال الرساله الى ${sentTags.join(', ')}`;
             if (notFoundTags.length > 0) {
-                replyMsg += ` (بعض الأشخاص غير موجودين بالسيرفر أو لا يمكن مراسلتهم)`;
+                replyMsg += ` (بعض الأشخاص غير موجودين بالسيرفر)`;
             }
 
             await interaction.editReply({ content: replyMsg });
