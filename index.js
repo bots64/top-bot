@@ -11,10 +11,6 @@ app.listen(PORT, () => {
 });
 
 const { Client, GatewayIntentBits, ChannelType, PermissionsBitField, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
-const { GoogleGenAI } = require('@google/genai');
-
-// تهيئة نموذج الذكاء الاصطناعي (يأخذ المفتاح تلقائياً من المتغيرات البيئية GEMINI_API_KEY)
-const ai = new GoogleGenAI();
 
 const client = new Client({
     intents: [
@@ -287,7 +283,7 @@ client.on('messageCreate', async message => {
             activeRooms.set(userId, newChannel.id);
 
             await newChannel.send({
-                content: `<@${userId}> اسأل أي سؤال وأنا بخدمتك.`
+                content: `<@${userId}> أنا جاهز لكل شي ومستعد لخدمتك، اسأل أو اطلب ما شئت.`
             });
 
         } catch (err) {
@@ -296,52 +292,13 @@ client.on('messageCreate', async message => {
         return;
     }
 
-    // 4. التفاعل الحقيقي داخل رومات الـ AI الخاصة بالمستخدمين (عبر Gemini API)
+    // 4. التفاعل داخل رومات الـ AI الخاصة بالمستخدمين (تم ضبطها لتناسب الرد الواحد الموحد)
     const isAiRoom = Array.from(activeRooms.values()).includes(message.channel.id);
     if (isAiRoom) {
         try {
-            await message.channel.sendTyping();
-
-            let promptParts = [content];
-
-            // دعم معالجة الصور إذا أرفق المستخدم صورة
-            if (message.attachments.size > 0) {
-                const attachment = message.attachments.first();
-                if (attachment.contentType && attachment.contentType.startsWith('image/')) {
-                    const response = await fetch(attachment.url);
-                    const arrayBuffer = await response.arrayBuffer();
-                    const base64Image = Buffer.from(arrayBuffer).toString('base64');
-
-                    promptParts = [
-                        content || 'ما هذا الموجود في الصورة؟ اشرح لي عنها.',
-                        {
-                            inlineData: {
-                                data: base64Image,
-                                mimeType: attachment.contentType
-                            }
-                        }
-                    ];
-                }
-            }
-
-            const aiResponse = await ai.models.generateContent({
-                model: 'gemini-2.5-flash',
-                contents: promptParts,
-            });
-
-            const replyText = aiResponse.text || 'عذراً، لم أستطع توليد إجابة.';
-
-            if (replyText.length > 2000) {
-                for (let i = 0; i < replyText.length; i += 2000) {
-                    await message.reply(replyText.substring(i, i + 2000));
-                }
-            } else {
-                await message.reply(replyText);
-            }
-
+            await message.reply('أنا جاهز لكل شي، كيف أقدر أساعدك؟');
         } catch (err) {
-            console.error('Gemini API Error:', err);
-            await message.reply('حدث خطأ أثناء معالجة طلبك عبر الذكاء الاصطناعي.');
+            console.error('Error replying in AI room:', err);
         }
         return;
     }
