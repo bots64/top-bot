@@ -1,6 +1,7 @@
 {
-  "name": "discord-bot",
+  "name": "discord-bot-combined",
   "version": "1.0.0",
+  "description": "Combined Discord Bot with Top stats, Anonymous messages, and AI rooms",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -10,6 +11,6 @@
     "express": "^4.19.2"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=16.9.0"
   }
 }
