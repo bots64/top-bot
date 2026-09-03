@@ -420,7 +420,7 @@ client.on('interactionCreate', async interaction => {
             }
 
             if (targetIds.length === 0) {
-                await interaction.editReply({ content: 'المنشن غلط ركز' });
+                await interaction.editReply({ content: 'هذا الشخص غير موجود في السيرفر' });
                 return;
             }
 
@@ -431,44 +431,39 @@ client.on('interactionCreate', async interaction => {
             const anonChannel = await client.channels.fetch(ANON_CHANNEL_ID).catch(() => null);
 
             for (const targetId of targetIds) {
-                const targetMember = await interaction.guild.members.get(targetId) || await interaction.guild.members.fetch(targetId).catch(() => null);
+                const targetMember = interaction.guild.members.cache.get(targetId) || await interaction.guild.members.fetch(targetId).catch(() => null);
                 if (!targetMember) {
                     notFoundTags.push(targetId);
                     continue;
                 }
                 if (targetMember.user.bot) continue;
 
-                // إرسال الرسالة للمستلم خاص (DM)
+                // إرسال الرسالة للمستلم خاص (DM) بالصيغة المطلوبة تماماً
                 try {
                     await targetMember.send(`**عندك رسالة من مجهول**\nالرسالة : ${messageText}\nالراسل : ${senderDisplay}`);
                 } catch (err) {}
 
-                // إرسال نسخة من الرسالة إلى روم رسالة من مجهول المحدد
+                // إرسال نسخة من الرسالة إلى روم "رسالة من مجهول" المحدد بالصيغة المطلوبة تماماً
                 if (anonChannel) {
-                    const embedLog = new EmbedBuilder()
-                        .setTitle('رسالة من مجهول جديدة')
-                        .setColor('#1e1f22')
-                        .setDescription(`**المستلم:** <@${targetId}>\n**الراسل:** ${senderDisplay}\n**الرسالة:**\n${messageText}`);
-                    
-                    await anonChannel.send({ embeds: [embedLog] }).catch(() => {});
+                    await anonChannel.send(`**عندك رسالة من مجهول**\nالرسالة : ${messageText}\nالراسل : ${senderDisplay}`).catch(() => {});
                 }
 
                 sentTags.push(`<@${targetId}>`);
             }
 
             if (sentTags.length === 0 && notFoundTags.length > 0) {
-                await interaction.editReply({ content: 'الشخص غير موجود بالسيرفر' });
+                await interaction.editReply({ content: 'هذا الشخص غير موجود في السيرفر' });
                 return;
             }
 
             if (sentTags.length === 0) {
-                await interaction.editReply({ content: 'المنشن غلط ركز' });
+                await interaction.editReply({ content: 'هذا الشخص غير موجود في السيرفر' });
                 return;
             }
 
-            let replyMsg = `تم ارسال الرساله الى ${sentTags.join(', ')}`;
+            let replyMsg = `تم إرسال الرسالة إلى الشخص أو الأشخاص المطلوبين`;
             if (notFoundTags.length > 0) {
-                replyMsg += ` (بعض الأشخاص غير موجودين بالسيرفر)`;
+                replyMsg += ` (بعض الأشخاص غير موجودين في السيرفر)`;
             }
 
             await interaction.editReply({ content: replyMsg });
