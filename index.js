@@ -1,4 +1,5 @@
 const express = require('express');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 const app = express();
 
 app.get('/', (req, res) => {
@@ -11,6 +12,10 @@ app.listen(PORT, () => {
 });
 
 const { Client, GatewayIntentBits, ChannelType, PermissionsBitField, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+
+// إعدادات مفتاح الذكاء الاصطناعي (تأكد أن GEMINI_API_KEY مضاف في Environment Variables على ريندر)
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const aiModel = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
 const client = new Client({
     intents: [
@@ -30,7 +35,7 @@ const EXCLUDED_ROLE_ID = '1535875661997277194';
 const ADMIN_ROLE_ID = '1544487320357572629';
 
 // إعدادات بوت الـ AI
-const TARGET_CHANNEL_ID = '1544964340916949052'; // الروم المستهدف للكتابة
+const TARGET_CHANNEL_ID = '1544964340916949052'; 
 const CATEGORIES = [
     '1544964105742585866',
     '1544964067876278272',
@@ -38,7 +43,6 @@ const CATEGORIES = [
     '1544964713803153418'
 ];
 
-// تخزين الرومات النشطة للـ AI
 const activeRooms = new Map();
 
 const db = {
@@ -87,7 +91,7 @@ client.on('messageCreate', async message => {
     checkDailyReset();
     const content = message.content.trim();
 
-    // 1. أوامر بوت الـ AI: أمر الحذف delete room
+    // 1. أوامر بوت الـ AI: حذف الروم
     if (content.toLowerCase() === 'delete room') {
         const isAiRoom = Array.from(activeRooms.values()).includes(message.channel.id);
         if (isAiRoom) {
@@ -106,7 +110,7 @@ client.on('messageCreate', async message => {
         return;
     }
 
-    // 2. أوامر الإدارية لبوت التوب
+    // 2. أوامر الإدارة لبوت التوب
     if (content.startsWith('rest chat') || content.startsWith('rest voice') || content.startsWith('اعطاء') || content.startsWith('سحب') || content.startsWith('leve ') || content.startsWith('come ')) {
         
         if (!message.member.roles.cache.has(ADMIN_ROLE_ID)) {
@@ -283,7 +287,7 @@ client.on('messageCreate', async message => {
             activeRooms.set(userId, newChannel.id);
 
             await newChannel.send({
-                content: `<@${userId}> أنا جاهز لكل شي ومستعد لخدمتك، اسأل أو اطلب ما شئت.`
+                content: `<@${userId}> أنا جاهز لكل شي، كيف أقدر أساعدك؟`
             });
 
         } catch (err) {
@@ -292,13 +296,27 @@ client.on('messageCreate', async message => {
         return;
     }
 
-    // 4. التفاعل داخل رومات الـ AI الخاصة بالمستخدمين (تم ضبطها لتناسب الرد الواحد الموحد)
+    // 4. التفاعل داخل رومات الـ AI الخاصة (مربوط الآن بـ Gemini للإجابة الفعلية)
     const isAiRoom = Array.from(activeRooms.values()).includes(message.channel.id);
     if (isAiRoom) {
         try {
-            await message.reply('أنا جاهز لكل شي، كيف أقدر أساعدك؟');
+            await message.channel.sendTyping();
+            
+            // إرسال السؤال إلى جيميني واستقبال الإجابة الذكية
+            const result = await aiModel.generateContent(content);
+            const response = await result.response;
+            const text = response.text();
+
+            if (text.length > 2000) {
+                for (let i = 0; i < text.length; i += 2000) {
+                    await message.reply(text.substring(i, i + 2000));
+                }
+            } else {
+                await message.reply(text);
+            }
         } catch (err) {
-            console.error('Error replying in AI room:', err);
+            console.error('Error with Gemini AI response:', err);
+            await message.reply('عذراً، صار خطأ في معالجة طلبك عبر الذكاء الاصطناعي.');
         }
         return;
     }
