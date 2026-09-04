@@ -85,7 +85,15 @@ client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
     await updateLeaderboards();
     await setupSecretRoomPanels();
+    
+    // التحديث الدوري للوحات كل 30 ثانية لليريدربورد
     setInterval(updateLeaderboards, 30000);
+
+    // تحديث لوحات الرومات السرية كل 5 دقائق בדיוק دون مسح الذاكرة
+    setInterval(async () => {
+        await setupSecretRoomPanels();
+        console.log('Secret room panels refreshed successfully.');
+    }, 5 * 60 * 1000);
 });
 
 function isExcluded(member) {
@@ -730,7 +738,6 @@ client.on('interactionCreate', async interaction => {
             for (const catId of ROOM_CATEGORIES) {
                 const cat = guild.channels.cache.get(catId);
                 if (cat && cat.children) {
-                    // حساب عدد الرومات التابعة للكاتيغوري
                     const roomsCount = guild.channels.cache.filter(c => c.parentId === catId).size;
                     if (roomsCount < 50) {
                         selectedCategoryId = catId;
