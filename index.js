@@ -44,7 +44,6 @@ const SECRET_ROOM_CONTROL_ID = '1545233055969443901';
 const EXCLUDED_ROLE_ID = '1535875661997277194';
 const ADMIN_ROLE_ID = '1544487320357572629';
 
-// Categories for secret rooms distribution (Max 50 per category)
 const ROOM_CATEGORIES = [
     '1544964067876278272',
     '1544964105742585866',
@@ -77,7 +76,6 @@ function checkDailyReset() {
         db.dailyMessages.clear();
         db.dailyVoice.clear();
         lastRecordedDate = currentDate;
-        console.log('Daily stats have been reset for the new day.');
     }
 }
 
@@ -86,13 +84,10 @@ client.once('ready', async () => {
     await updateLeaderboards();
     await setupSecretRoomPanels();
     
-    // التحديث الدوري لليريدربورد كل 30 ثانية
     setInterval(updateLeaderboards, 30000);
 
-    // تحديث لوحات الرومات السرية بالكامل كل 5 دقائق (حذف القديم وإرسال جديد)
     setInterval(async () => {
         await setupSecretRoomPanels();
-        console.log('Secret room panels refreshed successfully.');
     }, 5 * 60 * 1000);
 });
 
@@ -343,7 +338,6 @@ async function setupSecretRoomPanels() {
     try {
         const panelChannel = await client.channels.fetch(SECRET_ROOM_PANEL_ID).catch(() => null);
         if (panelChannel) {
-            // حذف رسائل البوت القديمة بالكامل في القناة وإرسال رسالة جديدة نظيفة
             const messages = await panelChannel.messages.fetch({ limit: 20 }).catch(() => null);
             if (messages) {
                 const botMessages = messages.filter(m => m.author.id === client.user.id);
@@ -365,7 +359,6 @@ async function setupSecretRoomPanels() {
 
         const controlChannel = await client.channels.fetch(SECRET_ROOM_CONTROL_ID).catch(() => null);
         if (controlChannel) {
-            // حذف رسائل البوت القديمة بالكامل في قناة التحكم وإرسال رسالة جديدة نظيفة
             const messages = await controlChannel.messages.fetch({ limit: 20 }).catch(() => null);
             if (messages) {
                 const botMessages = messages.filter(m => m.author.id === client.user.id);
@@ -385,7 +378,7 @@ async function setupSecretRoomPanels() {
             );
 
             const row2 = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('sr_delete').setLabel('Delete Room').setStyle(ButtonStyle.Danger)
+                new ButtonBuilder().setCustomId('sr_delete').setLabel('Delete Room').setStyle(ButtonStyle.Secondary)
             );
 
             await controlChannel.send({ embeds: [embed], components: [row1, row2] });
@@ -485,12 +478,6 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (interaction.customId === 'create_secret_room_btn') {
-            const userId = interaction.user.id;
-            if (db.secretRooms.has(userId)) {
-                await interaction.reply({ content: 'هذا الروم لازم لا يقول لديك روم من قبل.', ephemeral: true });
-                return;
-            }
-
             const modal = new ModalBuilder()
                 .setCustomId('modal_create_secret_room')
                 .setTitle('انشاء روم');
@@ -508,22 +495,32 @@ client.on('interactionCreate', async interaction => {
 
         if (['sr_kick', 'sr_add', 'sr_rename', 'sr_delete'].includes(interaction.customId)) {
             const userId = interaction.user.id;
-            const roomData = db.secretRooms.get(userId);
             
-            // التحقق الصارم: هل المستخدم هو صاحب الروم الفعلي؟
-            if (!roomData) {
-                await interaction.reply({ content: 'هذا الروم لازم لا يقول لازم تسوي روم مخفي قبل أو أنك لست صاحب الروم.', ephemeral: true });
+            // التحقق أن الشخص الذي الضغط موجود في أي روم سري كعضو
+            let activeRoomData = null;
+            let activeOwnerId = null;
+            
+            for (const [ownerId, data] of db.secretRooms.entries()) {
+                if (data.members.has(userId) || ownerId === userId) {
+                    activeRoomData = data;
+                    activeOwnerId = ownerId;
+                    break;
+                }
+            }
+
+            if (!activeRoomData) {
+                await interaction.reply({ content: 'يجب أن تكون عضواً في روم سري لتتمكن من استخدام هذه الأزرار.', ephemeral: true });
                 return;
             }
 
             if (interaction.customId === 'sr_delete') {
                 await interaction.deferReply({ ephemeral: true });
-                const channel = interaction.guild.channels.cache.get(roomData.channelId);
+                const channel = interaction.guild.channels.cache.get(activeRoomData.channelId);
                 if (channel) {
                     await channel.delete().catch(() => {});
                 }
-                db.channelToOwner.delete(roomData.channelId);
-                db.secretRooms.delete(userId);
+                db.channelToOwner.delete(activeRoomData.channelId);
+                db.secretRooms.delete(activeOwnerId);
                 await interaction.editReply({ content: 'تم حذف الروم' });
                 return;
             }
@@ -687,11 +684,6 @@ client.on('interactionCreate', async interaction => {
             await interaction.deferReply({ ephemeral: true });
             const userId = interaction.user.id;
             
-            if (db.secretRooms.has(userId)) {
-                await interaction.editReply({ content: 'هذا الروم لازم لا يقول لديك روم من قبل.' });
-                return;
-            }
-
             const rawInput = interaction.fields.getTextInputValue('target_users').trim();
 
             const targetIds = new Set();
@@ -729,7 +721,6 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // اختيار الكاتيغوري المناسب (أقل من 50 روم)
             let selectedCategoryId = ROOM_CATEGORIES[0];
             const guild = interaction.guild;
             
@@ -808,9 +799,10 @@ client.on('interactionCreate', async interaction => {
 
             const inviteText = `لديك دعوة من شخص\nللانضمام للروم السري مع (${invitedMentionsList.join(', ')})`;
 
+            // الأزرار باللون الرمادي (Secondary)
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId(`accept_sr_${inviteKey}`).setLabel('قبول').setStyle(ButtonStyle.Success),
-                new ButtonBuilder().setCustomId(`reject_sr_${inviteKey}`).setLabel('رفض').setStyle(ButtonStyle.Danger)
+                new ButtonBuilder().setCustomId(`accept_sr_${inviteKey}`).setLabel('قبول').setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder().setCustomId(`reject_sr_${inviteKey}`).setLabel('رفض').setStyle(ButtonStyle.Secondary)
             );
 
             for (const tId of validSentUsers) {
@@ -831,7 +823,15 @@ client.on('interactionCreate', async interaction => {
         if (interaction.customId === 'modal_sr_kick') {
             await interaction.deferReply({ ephemeral: true });
             const userId = interaction.user.id;
-            const roomData = db.secretRooms.get(userId);
+            
+            let activeRoomData = null;
+            for (const [, data] of db.secretRooms.entries()) {
+                if (data.members.has(userId)) {
+                    activeRoomData = data;
+                    break;
+                }
+            }
+
             const rawInput = interaction.fields.getTextInputValue('kick_target').trim();
 
             const targetIds = new Set();
@@ -861,13 +861,13 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            const secretChannel = interaction.guild.channels.cache.get(roomData.channelId);
+            const secretChannel = interaction.guild.channels.cache.get(activeRoomData.channelId);
             let kickedAny = false;
 
             for (const tId of targetIds) {
-                if (roomData.members.has(tId) || roomData.pending.has(tId)) {
-                    roomData.members.delete(tId);
-                    roomData.pending.delete(tId);
+                if (activeRoomData.members.has(tId) || activeRoomData.pending.has(tId)) {
+                    activeRoomData.members.delete(tId);
+                    activeRoomData.pending.delete(tId);
                     kickedAny = true;
 
                     if (secretChannel) {
@@ -886,7 +886,17 @@ client.on('interactionCreate', async interaction => {
         if (interaction.customId === 'modal_sr_add') {
             await interaction.deferReply({ ephemeral: true });
             const userId = interaction.user.id;
-            const roomData = db.secretRooms.get(userId);
+            
+            let activeRoomData = null;
+            let activeOwnerId = null;
+            for (const [ownerId, data] of db.secretRooms.entries()) {
+                if (data.members.has(userId)) {
+                    activeRoomData = data;
+                    activeOwnerId = ownerId;
+                    break;
+                }
+            }
+
             const rawInput = interaction.fields.getTextInputValue('add_target').trim();
 
             const targetIds = new Set();
@@ -922,22 +932,22 @@ client.on('interactionCreate', async interaction => {
             }
 
             const guild = interaction.guild;
-            const secretChannel = guild.channels.cache.get(roomData.channelId);
+            const secretChannel = guild.channels.cache.get(activeRoomData.channelId);
 
             let sentSuccessCount = 0;
             for (const tId of targetIds) {
-                roomData.pending.add(tId);
+                activeRoomData.pending.add(tId);
                 const inviteKey = Math.random().toString(36).substring(2, 9);
                 db.secretInvites.set(inviteKey, {
-                    ownerId: userId,
+                    ownerId: activeOwnerId,
                     channelId: secretChannel.id
                 });
 
                 const mem = guild.members.cache.get(tId);
                 if (mem) {
                     const row = new ActionRowBuilder().addComponents(
-                        new ButtonBuilder().setCustomId(`accept_sr_${inviteKey}`).setLabel('قبول').setStyle(ButtonStyle.Success),
-                        new ButtonBuilder().setCustomId(`reject_sr_${inviteKey}`).setLabel('رفض').setStyle(ButtonStyle.Danger)
+                        new ButtonBuilder().setCustomId(`accept_sr_${inviteKey}`).setLabel('قبول').setStyle(ButtonStyle.Secondary),
+                        new ButtonBuilder().setCustomId(`reject_sr_${inviteKey}`).setLabel('رفض').setStyle(ButtonStyle.Secondary)
                     );
                     const sent = await mem.send({ content: `لديك دعوة من شخص\nللانضمام للروم السري`, components: [row] }).catch(() => null);
                     if (sent) sentSuccessCount++;
@@ -955,7 +965,15 @@ client.on('interactionCreate', async interaction => {
         if (interaction.customId === 'modal_sr_rename') {
             await interaction.deferReply({ ephemeral: true });
             const userId = interaction.user.id;
-            const roomData = db.secretRooms.get(userId);
+            
+            let activeRoomData = null;
+            for (const [, data] of db.secretRooms.entries()) {
+                if (data.members.has(userId)) {
+                    activeRoomData = data;
+                    break;
+                }
+            }
+
             const newName = interaction.fields.getTextInputValue('new_name').trim();
 
             if (!newName) {
@@ -963,7 +981,7 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            const secretChannel = interaction.guild.channels.cache.get(roomData.channelId);
+            const secretChannel = interaction.guild.channels.cache.get(activeRoomData.channelId);
             if (secretChannel) {
                 await secretChannel.setName(newName).catch(() => {});
             }
