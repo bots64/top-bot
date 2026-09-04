@@ -1,5 +1,4 @@
 const express = require('express');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 const app = express();
 
 app.get('/', (req, res) => {
@@ -11,11 +10,7 @@ app.listen(PORT, () => {
     console.log(`Server is listening on port ${PORT}`);
 });
 
-const { Client, GatewayIntentBits, ChannelType, PermissionsBitField, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
-
-// إعدادات مفتاح الذكاء الاصطناعي (تأكد أن GEMINI_API_KEY مضاف في Environment Variables على ريندر)
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const aiModel = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 
 const client = new Client({
     intents: [
@@ -27,23 +22,11 @@ const client = new Client({
     ]
 });
 
-// إعدادات بوت التوب
 const TXT_CHANNEL_ID = '1543093337165144084';
 const VC_CHANNEL_ID = '1543093370065260564';
 const ANON_CHANNEL_ID = '1543113579962835054';
 const EXCLUDED_ROLE_ID = '1535875661997277194';
 const ADMIN_ROLE_ID = '1544487320357572629';
-
-// إعدادات بوت الـ AI
-const TARGET_CHANNEL_ID = '1544964340916949052'; 
-const CATEGORIES = [
-    '1544964105742585866',
-    '1544964067876278272',
-    '1544964686653431878',
-    '1544964713803153418'
-];
-
-const activeRooms = new Map();
 
 const db = {
     messages: new Map(),       
@@ -91,26 +74,6 @@ client.on('messageCreate', async message => {
     checkDailyReset();
     const content = message.content.trim();
 
-    // 1. أوامر بوت الـ AI: حذف الروم
-    if (content.toLowerCase() === 'delete room') {
-        const isAiRoom = Array.from(activeRooms.values()).includes(message.channel.id);
-        if (isAiRoom) {
-            try {
-                await message.channel.delete();
-                for (let [userId, chId] of activeRooms.entries()) {
-                    if (chId === message.channel.id) {
-                        activeRooms.delete(userId);
-                        break;
-                    }
-                }
-            } catch (err) {
-                console.error('Error deleting room:', err);
-            }
-        }
-        return;
-    }
-
-    // 2. أوامر الإدارة لبوت التوب
     if (content.startsWith('rest chat') || content.startsWith('rest voice') || content.startsWith('اعطاء') || content.startsWith('سحب') || content.startsWith('leve ') || content.startsWith('come ')) {
         
         if (!message.member.roles.cache.has(ADMIN_ROLE_ID)) {
@@ -213,120 +176,11 @@ client.on('messageCreate', async message => {
         }
     }
 
-    // 3. التحقق من روم الـ AI الرئيسي لإنشاء الرومات الخاصة
-    if (message.channel.id === TARGET_CHANNEL_ID) {
-        try {
-            await message.delete();
-        } catch (err) {
-            console.error('Failed to delete message:', err);
-        }
-
-        const userId = message.author.id;
-
-        if (activeRooms.has(userId)) {
-            const existingRoomId = activeRooms.get(userId);
-            const existingRoom = message.guild.channels.cache.get(existingRoomId);
-
-            if (existingRoom) {
-                const warningMsg = await message.channel.send({
-                    content: `<@${userId}> أنت عندك روم من قبل!`
-                });
-                setTimeout(() => warningMsg.delete().catch(() => {}), 4000);
-                return;
-            } else {
-                activeRooms.delete(userId);
-            }
-        }
-
-        let selectedCategory = null;
-        for (const catId of CATEGORIES) {
-            const category = message.guild.channels.cache.get(catId);
-            if (category && category.type === ChannelType.GuildCategory) {
-                const roomsCount = category.children.cache.size;
-                if (roomsCount < 50) {
-                    selectedCategory = catId;
-                    break;
-                }
-            }
-        }
-
-        if (!selectedCategory) {
-            selectedCategory = CATEGORIES[CATEGORIES.length - 1];
-        }
-
-        try {
-            const channelName = `ai-${message.author.username}`;
-            const newChannel = await message.guild.channels.create({
-                name: channelName,
-                type: ChannelType.GuildText,
-                parent: selectedCategory,
-                permissionOverwrites: [
-                    {
-                        id: message.guild.id,
-                        deny: [PermissionsBitField.Flags.ViewChannel]
-                    },
-                    {
-                        id: userId,
-                        allow: [
-                            PermissionsBitField.Flags.ViewChannel,
-                            PermissionsBitField.Flags.SendMessages,
-                            PermissionsBitField.Flags.ReadMessageHistory
-                        ]
-                    },
-                    {
-                        id: client.user.id,
-                        allow: [
-                            PermissionsBitField.Flags.ViewChannel,
-                            PermissionsBitField.Flags.SendMessages,
-                            PermissionsBitField.Flags.ReadMessageHistory
-                        ]
-                    }
-                ]
-            });
-
-            activeRooms.set(userId, newChannel.id);
-
-            await newChannel.send({
-                content: `<@${userId}> أنا جاهز لكل شي، كيف أقدر أساعدك؟`
-            });
-
-        } catch (err) {
-            console.error('Error creating AI room:', err);
-        }
-        return;
-    }
-
-    // 4. التفاعل داخل رومات الـ AI الخاصة (مربوط الآن بـ Gemini للإجابة الفعلية)
-    const isAiRoom = Array.from(activeRooms.values()).includes(message.channel.id);
-    if (isAiRoom) {
-        try {
-            await message.channel.sendTyping();
-            
-            // إرسال السؤال إلى جيميني واستقبال الإجابة الذكية
-            const result = await aiModel.generateContent(content);
-            const response = await result.response;
-            const text = response.text();
-
-            if (text.length > 2000) {
-                for (let i = 0; i < text.length; i += 2000) {
-                    await message.reply(text.substring(i, i + 2000));
-                }
-            } else {
-                await message.reply(text);
-            }
-        } catch (err) {
-            console.error('Error with Gemini AI response:', err);
-            await message.reply('عذراً، صار خطأ في معالجة طلبك عبر الذكاء الاصطناعي.');
-        }
-        return;
-    }
-
     if (message.channel.isThread() || message.channel.type === 11 || message.channel.type === 12) return;
     if (message.channel.parent && message.channel.parent.type === 2) return;
 
     if (isExcluded(message.member)) return;
     
-    // تسجيل تفاعل الرسائل لبوت التوب
     const userId = message.author.id;
     db.messages.set(userId, (db.messages.get(userId) || 0) + 1);
     db.dailyMessages.set(userId, (db.dailyMessages.get(userId) || 0) + 1);
@@ -545,6 +399,7 @@ client.on('interactionCreate', async interaction => {
             const rawTargetInput = interaction.fields.getTextInputValue('target_user').trim();
             const messageText = interaction.fields.getTextInputValue('message_content').trim();
 
+            // فحص وجود رابط سيرفر ديسكورد (Discord Invite Links)
             const inviteRegex = /(discord\.(gg|com\/invite)\/[a-zA-Z0-9]+|discord\.app\/invite\/[a-zA-Z0-9]+|discord\.me\/[a-zA-Z0-9]+)/i;
             if (inviteRegex.test(messageText)) {
                 await interaction.editReply({ content: 'لم يتم إرسال الرسالة إلى الشخص أو الأشخاص المطلوبين لأنه يوجد هناك رابط لسيرفر.' });
