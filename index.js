@@ -10,7 +10,19 @@ app.listen(PORT, () => {
     console.log(`Server is listening on port ${PORT}`);
 });
 
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const { 
+    Client, 
+    GatewayIntentBits, 
+    EmbedBuilder, 
+    ActionRowBuilder, 
+    ButtonBuilder, 
+    ButtonStyle, 
+    ModalBuilder, 
+    TextInputBuilder, 
+    TextInputStyle,
+    ChannelType,
+    PermissionsBitField 
+} = require('discord.js');
 
 const client = new Client({
     intents: [
@@ -25,6 +37,11 @@ const client = new Client({
 const TXT_CHANNEL_ID = '1543093337165144084';
 const VC_CHANNEL_ID = '1543093370065260564';
 const ANON_CHANNEL_ID = '1543113579962835054';
+
+// رومات الإضافات الجديدة
+const SECRET_ROOM_PANEL_ID = '1545231229312573450';
+const SECRET_ROOM_CONTROL_ID = '1545233055969443901';
+
 const EXCLUDED_ROLE_ID = '1535875661997277194';
 const ADMIN_ROLE_ID = '1544487320357572629';
 
@@ -34,7 +51,11 @@ const db = {
     dailyMessages: new Map(),  
     dailyVoice: new Map(),
     cooldowns: new Map(),
-    bannedUsers: new Set()     
+    bannedUsers: new Set(),
+    // تخزين بيانات الرومات السرية: ownerId -> { channelId, members: Set([id1, id2]), pending: Set([id1]) }
+    secretRooms: new Map(),
+    // تخزين دعوات الخاص: inviteId -> { ownerId, invitedIds, channelId }
+    secretInvites: new Map()
 };
 
 function getTodayDateString() {
@@ -57,6 +78,7 @@ function checkDailyReset() {
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
     await updateLeaderboards();
+    await setupSecretRoomPanels();
     setInterval(updateLeaderboards, 30000);
 });
 
@@ -303,6 +325,62 @@ async function updateLeaderboards() {
     }
 }
 
+async function setupSecretRoomPanels() {
+    try {
+        // 1. روم الإنشاء
+        const panelChannel = await client.channels.fetch(SECRET_ROOM_PANEL_ID).catch(() => null);
+        if (panelChannel) {
+            const messages = await panelChannel.messages.fetch({ limit: 10 }).catch(() => null);
+            const botMsg = messages ? messages.find(m => m.author.id === client.user.id) : null;
+            
+            const embed = new EmbedBuilder()
+                .setColor('#1e1f22')
+                .setDescription('سو رومك مع من تحب');
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('create_secret_room_btn').setLabel('انشاء روم').setStyle(ButtonStyle.Secondary)
+            );
+
+            if (botMsg) {
+                await botMsg.edit({ embeds: [embed], components: [row] }).catch(async () => {
+                    await botMsg.delete().catch(() => {});
+                    await panelChannel.send({ embeds: [embed], components: [row] });
+                });
+            } else {
+                await panelChannel.send({ embeds: [embed], components: [row] });
+            }
+        }
+
+        // 2. روم لوحة التحكم (الزرار الثلاثة)
+        const controlChannel = await client.channels.fetch(SECRET_ROOM_CONTROL_ID).catch(() => null);
+        if (controlChannel) {
+            const messages = await controlChannel.messages.fetch({ limit: 10 }).catch(() => null);
+            const botMsg = messages ? messages.find(m => m.author.id === client.user.id) : null;
+            
+            const embed = new EmbedBuilder()
+                .setColor('#1e1f22')
+                .setTitle('Choose a leader action');
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('sr_kick').setLabel('Kick Member').setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder().setCustomId('sr_add').setLabel('Invite Member').setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder().setCustomId('sr_rename').setLabel('Edit Role').setStyle(ButtonStyle.Secondary)
+            );
+
+            if (botMsg) {
+                await botMsg.edit({ embeds: [embed], components: [row] }).catch(async () => {
+                    await botMsg.delete().catch(() => {});
+                    await controlChannel.send({ embeds: [embed], components: [row] });
+                });
+            } else {
+                await controlChannel.send({ embeds: [embed], components: [row] });
+            }
+        }
+    } catch (err) {
+        console.error('Error setupSecretRoomPanels:', err);
+    }
+}
+
 function getTopMessagesText() {
     const sorted = [...db.messages.entries()].filter(([userId]) => !db.bannedUsers.has(userId)).sort((a, b) => b[1] - a[1]).slice(0, 10);
     if (sorted.length === 0) return 'لا توجد بيانات كافية بعد.';
@@ -391,6 +469,116 @@ client.on('interactionCreate', async interaction => {
 
             await interaction.showModal(modal);
         }
+
+        // ---- أزرار الروم السري ----
+        if (interaction.customId === 'create_secret_room_btn') {
+            const userId = interaction.user.id;
+            if (db.secretRooms.has(userId)) {
+                await interaction.reply({ content: 'لديك روم سري مسبقاً!', ephemeral: true });
+                return;
+            }
+
+            const modal = new ModalBuilder()
+                .setCustomId('modal_create_secret_room')
+                .setTitle('انشاء روم');
+
+            const targetInput = new TextInputBuilder()
+                .setCustomId('target_users')
+                .setLabel('اكتب يوزرات الشخص أو الأشخاص')
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder('اكتب يوزراتهم ولا تشيل هم')
+                .setRequired(true);
+
+            modal.addComponents(new ActionRowBuilder().addComponents(targetInput));
+            await interaction.showModal(modal);
+        }
+
+        // أزرار التحكم الثلاثة
+        if (['sr_kick', 'sr_add', 'sr_rename'].includes(interaction.customId)) {
+            const userId = interaction.user.id;
+            const roomData = db.secretRooms.get(userId);
+            if (!roomData) {
+                await interaction.reply({ content: 'هذا الروم لازم لا يقول لازم تسوي روم مخفي قبل بالرسالة الزرقاء التي ما تشوف إلا هو.', ephemeral: true });
+                return;
+            }
+
+            const modal = new ModalBuilder();
+            if (interaction.customId === 'sr_kick') {
+                modal.setCustomId('modal_sr_kick').setTitle('طرد عضو');
+                const tInput = new TextInputBuilder()
+                    .setCustomId('kick_target')
+                    .setLabel('اكتب يوزر الشخص أو الأشخاص المراد طردهم أو آيديهم')
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder('اكتب يوزر أو آيدي')
+                    .setRequired(true);
+                modal.addComponents(new ActionRowBuilder().addComponents(tInput));
+            } else if (interaction.customId === 'sr_add') {
+                modal.setCustomId('modal_sr_add').setTitle('إضافة عضو');
+                const tInput = new TextInputBuilder()
+                    .setCustomId('add_target')
+                    .setLabel('اكتب يوزر أو يوزرات الأشخاص المراد إضافتهم')
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder('اكتب يوزرهم ولا تتردد')
+                    .setRequired(true);
+                modal.addComponents(new ActionRowBuilder().addComponents(tInput));
+            } else if (interaction.customId === 'sr_rename') {
+                modal.setCustomId('modal_sr_rename').setTitle('تعديل اسم الروم');
+                const tInput = new TextInputBuilder()
+                    .setCustomId('new_name')
+                    .setLabel('اكتب الاسم الجديد للروم')
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder('اكتب الاسم الجديد فقط بدون إضافات')
+                    .setRequired(true);
+                modal.addComponents(new ActionRowBuilder().addComponents(tInput));
+            }
+
+            await interaction.showModal(modal);
+        }
+
+        // تفاعل أزرار قبول/رفض الدعوة في الخاص
+        if (interaction.customId.startsWith('accept_sr_') || interaction.customId.startsWith('reject_sr_')) {
+            await interaction.deferReply({ ephemeral: true });
+            const inviteKey = interaction.customId.replace('accept_sr_', '').replace('reject_sr_', '');
+            const inviteInfo = db.secretInvites.get(inviteKey);
+
+            if (!inviteInfo) {
+                await interaction.editReply({ content: 'هذه الدعوة منتهية أو غير صالحة.' });
+                return;
+            }
+
+            const userId = interaction.user.id;
+            const roomData = db.secretRooms.get(inviteInfo.ownerId);
+
+            if (!roomData) {
+                await interaction.editReply({ content: 'الروم لم يعد موجوداً.' });
+                return;
+            }
+
+            if (interaction.customId.startsWith('reject_sr_')) {
+                if (roomData.pending) roomData.pending.delete(userId);
+                db.secretInvites.delete(inviteKey);
+                await interaction.editReply({ content: 'تم رفض الدعوة' });
+                return;
+            }
+
+            // قبول الدعوة
+            if (roomData.pending) roomData.pending.delete(userId);
+            roomData.members.add(userId);
+            db.secretInvites.delete(inviteKey);
+
+            // منح الصلاحية للروم المخفي
+            const channel = interaction.guild.channels.cache.get(roomData.channelId);
+            if (channel) {
+                await channel.permissionOverwrites.edit(userId, {
+                    ViewChannel: true,
+                    SendMessages: true,
+                    ReadMessageHistory: true
+                }).catch(() => {});
+            }
+
+            await interaction.editReply({ content: 'تم انضمامك للروم السري' });
+        }
+
     } else if (interaction.isModalSubmit()) {
         if (interaction.customId === 'modal_hide' || interaction.customId === 'modal_reveal') {
             await interaction.deferReply({ ephemeral: true });
@@ -399,7 +587,6 @@ client.on('interactionCreate', async interaction => {
             const rawTargetInput = interaction.fields.getTextInputValue('target_user').trim();
             const messageText = interaction.fields.getTextInputValue('message_content').trim();
 
-            // فحص وجود رابط سيرفر ديسكورد (Discord Invite Links)
             const inviteRegex = /(discord\.(gg|com\/invite)\/[a-zA-Z0-9]+|discord\.app\/invite\/[a-zA-Z0-9]+|discord\.me\/[a-zA-Z0-9]+)/i;
             if (inviteRegex.test(messageText)) {
                 await interaction.editReply({ content: 'لم يتم إرسال الرسالة إلى الشخص أو الأشخاص المطلوبين لأنه يوجد هناك رابط لسيرفر.' });
@@ -471,6 +658,272 @@ client.on('interactionCreate', async interaction => {
             }
 
             await interaction.editReply({ content: replyMsg });
+        }
+
+        // --- معالجة إنشاء الروم السري ---
+        if (interaction.customId === 'modal_create_secret_room') {
+            await interaction.deferReply({ ephemeral: true });
+            const userId = interaction.user.id;
+            const rawInput = interaction.fields.getTextInputValue('target_users').trim();
+
+            const targetIds = new Set();
+            const matches = rawInput.matchAll(/<@!?(\d+)>|(\d{17,19})/g);
+            for (const match of matches) {
+                const id = match[1] || match[2];
+                if (id && id !== userId) targetIds.add(id);
+            }
+
+            const tokens = rawInput.split(/\s+/);
+            const members = await interaction.guild.members.fetch().catch(() => null);
+
+            if (members) {
+                for (const token of tokens) {
+                    const cleanToken = token.replace('@', '').toLowerCase();
+                    if (!cleanToken) continue;
+
+                    const found = members.find(m => 
+                        (m.user.username.toLowerCase() === cleanToken || 
+                        (m.nickname && m.nickname.toLowerCase() === cleanToken) || 
+                        m.user.tag.toLowerCase() === cleanToken) && m.id !== userId
+                    );
+                    
+                    if (found) {
+                        targetIds.add(found.id);
+                    }
+                }
+            }
+
+            // التحقق من الحد الأقصى (150 شخص كحد أقصى)
+            if (targetIds.size > 150) {
+                await interaction.editReply({ content: 'العدد كثير جداً أعلى حد 150 هذا لو أحد بغى يعطيهم.' });
+                return;
+            }
+
+            if (targetIds.size === 0) {
+                await interaction.editReply({ content: 'العدد غير كافي أو اليوزر غير صحيح أو ليس في السيرفر.' });
+                return;
+            }
+
+            const ownerMember = interaction.guild.members.cache.get(userId);
+            const roomName = `room-${ownerMember.user.username}`;
+
+            // إنشاء الروم المخفي تماماً عن الجميع
+            const guild = interaction.guild;
+            const secretChannel = await guild.channels.create({
+                name: roomName,
+                type: ChannelType.GuildText,
+                permissionOverwrites: [
+                    {
+                        id: guild.id, // @everyone
+                        deny: [PermissionsBitField.Flags.ViewChannel]
+                    },
+                    {
+                        id: userId,
+                        allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory]
+                    },
+                    {
+                        id: client.user.id,
+                        allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ManageChannels]
+                    }
+                ]
+            }).catch(() => null);
+
+            if (!secretChannel) {
+                await interaction.editReply({ content: 'حدث خطأ أثناء إنشاء الروم.' });
+                return;
+            }
+
+            // إضافة الستريتر/الأدمن ليتمكنوا من رؤيته إن رغبت (حسب طلبك: "ما حد يقدر يشوف ذا الروم إلا الستريتر أو صاحب الروم نفسه")
+            // سنمنح دور الأدمن صلاحية الرؤية أيضاً احتياطياً للأمان الاداري
+            if (ADMIN_ROLE_ID) {
+                await secretChannel.permissionOverwrites.edit(ADMIN_ROLE_ID, {
+                    ViewChannel: true,
+                    SendMessages: true,
+                    ReadMessageHistory: true
+                }).catch(() => {});
+            }
+
+            const membersSet = new Set([userId]);
+            const pendingSet = new Set();
+
+            // جمع أسماء الأشخاص الذين سيتم ذكرهم في الدعوة
+            const invitedMentionsList = [];
+            invitedMentionsList.push(`<@${userId}>`);
+
+            for (const tId of targetIds) {
+                const mem = guild.members.cache.get(tId);
+                if (!mem) continue;
+                pendingSet.add(tId);
+                invitedMentionsList.push(`<@${tId}>`);
+            }
+
+            db.secretRooms.set(userId, {
+                channelId: secretChannel.id,
+                members: membersSet,
+                pending: pendingSet
+            });
+
+            // إرسال الدعوات في الخاص لكل عضو مستهدف
+            const inviteKey = Math.random().toString(36.substring(2, 9));
+            db.secretInvites.set(inviteKey, {
+                ownerId: userId,
+                channelId: secretChannel.id
+            });
+
+            const inviteText = `لديك دعوة من شخص\nللانضمام للروم السري مع (${invitedMentionsList.join(', ')})`;
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId(`accept_sr_${inviteKey}`).setLabel('قبول').setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId(`reject_sr_${inviteKey}`).setLabel('رفض').setStyle(ButtonStyle.Danger)
+            );
+
+            for (const tId of targetIds) {
+                const mem = guild.members.cache.get(tId);
+                if (mem) {
+                    await mem.send({ content: inviteText, components: [row] }).catch(() => {});
+                }
+            }
+
+            await interaction.editReply({ content: `تم إنشاء الروم السري بنجاح وتم إرسال الدعوات للأشخاص (الحد الأقصى 150). الروم المخفي: <#${secretChannel.id}>` });
+        }
+
+        // --- طرد عضو من الروم السري ---
+        if (interaction.customId === 'modal_sr_kick') {
+            await interaction.deferReply({ ephemeral: true });
+            const userId = interaction.user.id;
+            const roomData = db.secretRooms.get(userId);
+            const rawInput = interaction.fields.getTextInputValue('kick_target').trim();
+
+            const targetIds = new Set();
+            const matches = rawInput.matchAll(/<@!?(\d+)>|(\d{17,19})/g);
+            for (const match of matches) {
+                const id = match[1] || match[2];
+                if (id) targetIds.add(id);
+            }
+
+            const members = await interaction.guild.members.fetch().catch(() => null);
+            if (members) {
+                const tokens = rawInput.split(/\s+/);
+                for (const token of tokens) {
+                    const cleanToken = token.replace('@', '').toLowerCase();
+                    if (!cleanToken) continue;
+                    const found = members.find(m => 
+                        m.user.username.toLowerCase() === cleanToken || 
+                        (m.nickname && m.nickname.toLowerCase() === cleanToken) || 
+                        m.user.tag.toLowerCase() === cleanToken
+                    );
+                    if (found) targetIds.add(found.id);
+                }
+            }
+
+            if (targetIds.size === 0) {
+                await interaction.editReply({ content: 'المنشن غير صحيح' });
+                return;
+            }
+
+            const secretChannel = interaction.guild.channels.cache.get(roomData.channelId);
+            let kickedAny = false;
+
+            for (const tId of targetIds) {
+                if (roomData.members.has(tId) || roomData.pending.has(tId)) {
+                    roomData.members.delete(tId);
+                    roomData.pending.delete(tId);
+                    kickedAny = true;
+
+                    if (secretChannel) {
+                        await secretChannel.permissionOverwrites.delete(tId).catch(() => {});
+                    }
+                }
+            }
+
+            if (kickedAny) {
+                await interaction.editReply({ content: 'تم طرده ويصير هذاك الشخص ما عاد يقدر يشوف الروم، ولا يقدر يسوي في الروم شيء.' });
+            } else {
+                await interaction.editReply({ content: 'هذا الشخص ليس بالروم أو ليس بالسيرفر' });
+            }
+        }
+
+        // --- إضافة عضو للروم السري ---
+        if (interaction.customId === 'modal_sr_add') {
+            await interaction.deferReply({ ephemeral: true });
+            const userId = interaction.user.id;
+            const roomData = db.secretRooms.get(userId);
+            const rawInput = interaction.fields.getTextInputValue('add_target').trim();
+
+            const targetIds = new Set();
+            const matches = rawInput.matchAll(/<@!?(\d+)>|(\d{17,19})/g);
+            for (const match of matches) {
+                const id = match[1] || match[2];
+                if (id) targetIds.add(id);
+            }
+
+            const members = await interaction.guild.members.fetch().catch(() => null);
+            if (members) {
+                const tokens = rawInput.split(/\s+/);
+                for (const token of tokens) {
+                    const cleanToken = token.replace('@', '').toLowerCase();
+                    if (!cleanToken) continue;
+                    const found = members.find(m => 
+                        m.user.username.toLowerCase() === cleanToken || 
+                        (m.nickname && m.nickname.toLowerCase() === cleanToken) || 
+                        m.user.tag.toLowerCase() === cleanToken
+                    );
+                    if (found) targetIds.add(found.id);
+                }
+            }
+
+            if (roomData.members.size + targetIds.size > 150) {
+                await interaction.editReply({ content: 'العدد كثير جداً، الحد الأقصى المسموح بالروم هو 150 شخصاً.' });
+                return;
+            }
+
+            if (targetIds.size === 0) {
+                await interaction.editReply({ content: 'المنشن أو اليوزر غير صحيح أو ليس في السيرفر.' });
+                return;
+            }
+
+            const guild = interaction.guild;
+            const secretChannel = guild.channels.cache.get(roomData.channelId);
+
+            for (const tId of targetIds) {
+                roomData.pending.add(tId);
+                const inviteKey = Math.random().toString(36).substring(2, 9);
+                db.secretInvites.set(inviteKey, {
+                    ownerId: userId,
+                    channelId: secretChannel.id
+                });
+
+                const mem = guild.members.cache.get(tId);
+                if (mem) {
+                    const row = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder().setCustomId(`accept_sr_${inviteKey}`).setLabel('قبول').setStyle(ButtonStyle.Success),
+                        new ButtonBuilder().setCustomId(`reject_sr_${inviteKey}`).setLabel('رفض').setStyle(ButtonStyle.Danger)
+                    );
+                    await mem.send({ content: `لديك دعوة من شخص\nللانضمام للروم السري`, components: [row] }).catch(() => {});
+                }
+            }
+
+            await interaction.editReply({ content: 'ثم أضفت الشخص للروم (أرسلت له دعوة في الخاص لينضم).' });
+        }
+
+        // --- تعديل اسم الروم السري ---
+        if (interaction.customId === 'modal_sr_rename') {
+            await interaction.deferReply({ ephemeral: true });
+            const userId = interaction.user.id;
+            const roomData = db.secretRooms.get(userId);
+            const newName = interaction.fields.getTextInputValue('new_name').trim();
+
+            if (!newName) {
+                await interaction.editReply({ content: 'الاسم غير صحيح.' });
+                return;
+            }
+
+            const secretChannel = interaction.guild.channels.cache.get(roomData.channelId);
+            if (secretChannel) {
+                await secretChannel.setName(newName).catch(() => {});
+            }
+
+            await interaction.editReply({ content: `تم تعديل اسم الروم بنجاح إلى: **${newName}**` });
         }
     }
 });
