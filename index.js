@@ -86,10 +86,10 @@ client.once('ready', async () => {
     await updateLeaderboards();
     await setupSecretRoomPanels();
     
-    // التحديث الدوري للوحات كل 30 ثانية لليريدربورد
+    // التحديث الدوري لليريدربورد كل 30 ثانية
     setInterval(updateLeaderboards, 30000);
 
-    // تحديث لوحات الرومات السرية كل 5 دقائق בדיוק دون مسح الذاكرة
+    // تحديث لوحات الرومات السرية بالكامل كل 5 دقائق (حذف القديم وإرسال جديد)
     setInterval(async () => {
         await setupSecretRoomPanels();
         console.log('Secret room panels refreshed successfully.');
@@ -343,8 +343,14 @@ async function setupSecretRoomPanels() {
     try {
         const panelChannel = await client.channels.fetch(SECRET_ROOM_PANEL_ID).catch(() => null);
         if (panelChannel) {
-            const messages = await panelChannel.messages.fetch({ limit: 10 }).catch(() => null);
-            const botMsg = messages ? messages.find(m => m.author.id === client.user.id) : null;
+            // حذف رسائل البوت القديمة بالكامل في القناة وإرسال رسالة جديدة نظيفة
+            const messages = await panelChannel.messages.fetch({ limit: 20 }).catch(() => null);
+            if (messages) {
+                const botMessages = messages.filter(m => m.author.id === client.user.id);
+                for (const [, msg] of botMessages) {
+                    await msg.delete().catch(() => {});
+                }
+            }
             
             const embed = new EmbedBuilder()
                 .setColor('#1e1f22')
@@ -354,20 +360,19 @@ async function setupSecretRoomPanels() {
                 new ButtonBuilder().setCustomId('create_secret_room_btn').setLabel('انشاء روم').setStyle(ButtonStyle.Secondary)
             );
 
-            if (botMsg) {
-                await botMsg.edit({ embeds: [embed], components: [row] }).catch(async () => {
-                    await botMsg.delete().catch(() => {});
-                    await panelChannel.send({ embeds: [embed], components: [row] });
-                });
-            } else {
-                await panelChannel.send({ embeds: [embed], components: [row] });
-            }
+            await panelChannel.send({ embeds: [embed], components: [row] });
         }
 
         const controlChannel = await client.channels.fetch(SECRET_ROOM_CONTROL_ID).catch(() => null);
         if (controlChannel) {
-            const messages = await controlChannel.messages.fetch({ limit: 10 }).catch(() => null);
-            const botMsg = messages ? messages.find(m => m.author.id === client.user.id) : null;
+            // حذف رسائل البوت القديمة بالكامل في قناة التحكم وإرسال رسالة جديدة نظيفة
+            const messages = await controlChannel.messages.fetch({ limit: 20 }).catch(() => null);
+            if (messages) {
+                const botMessages = messages.filter(m => m.author.id === client.user.id);
+                for (const [, msg] of botMessages) {
+                    await msg.delete().catch(() => {});
+                }
+            }
             
             const embed = new EmbedBuilder()
                 .setColor('#1e1f22')
@@ -383,14 +388,7 @@ async function setupSecretRoomPanels() {
                 new ButtonBuilder().setCustomId('sr_delete').setLabel('Delete Room').setStyle(ButtonStyle.Danger)
             );
 
-            if (botMsg) {
-                await botMsg.edit({ embeds: [embed], components: [row1, row2] }).catch(async () => {
-                    await botMsg.delete().catch(() => {});
-                    await controlChannel.send({ embeds: [embed], components: [row1, row2] });
-                });
-            } else {
-                await controlChannel.send({ embeds: [embed], components: [row1, row2] });
-            }
+            await controlChannel.send({ embeds: [embed], components: [row1, row2] });
         }
     } catch (err) {
         console.error('Error setupSecretRoomPanels:', err);
