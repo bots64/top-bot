@@ -38,7 +38,6 @@ const TXT_CHANNEL_ID = '1543093337165144084';
 const VC_CHANNEL_ID = '1543093370065260564';
 const ANON_CHANNEL_ID = '1543113579962835054';
 
-// رومات الإضافات الجديدة
 const SECRET_ROOM_PANEL_ID = '1545231229312573450';
 const SECRET_ROOM_CONTROL_ID = '1545233055969443901';
 
@@ -52,9 +51,7 @@ const db = {
     dailyVoice: new Map(),
     cooldowns: new Map(),
     bannedUsers: new Set(),
-    // تخزين بيانات الرومات السرية: ownerId -> { channelId, members: Set([id1, id2]), pending: Set([id1]) }
     secretRooms: new Map(),
-    // تخزين دعوات الخاص: inviteId -> { ownerId, invitedIds, channelId }
     secretInvites: new Map()
 };
 
@@ -327,7 +324,6 @@ async function updateLeaderboards() {
 
 async function setupSecretRoomPanels() {
     try {
-        // 1. روم الإنشاء
         const panelChannel = await client.channels.fetch(SECRET_ROOM_PANEL_ID).catch(() => null);
         if (panelChannel) {
             const messages = await panelChannel.messages.fetch({ limit: 10 }).catch(() => null);
@@ -351,7 +347,6 @@ async function setupSecretRoomPanels() {
             }
         }
 
-        // 2. روم لوحة التحكم (الزرار الثلاثة)
         const controlChannel = await client.channels.fetch(SECRET_ROOM_CONTROL_ID).catch(() => null);
         if (controlChannel) {
             const messages = await controlChannel.messages.fetch({ limit: 10 }).catch(() => null);
@@ -470,7 +465,6 @@ client.on('interactionCreate', async interaction => {
             await interaction.showModal(modal);
         }
 
-        // ---- أزرار الروم السري ----
         if (interaction.customId === 'create_secret_room_btn') {
             const userId = interaction.user.id;
             if (db.secretRooms.has(userId)) {
@@ -493,7 +487,6 @@ client.on('interactionCreate', async interaction => {
             await interaction.showModal(modal);
         }
 
-        // أزرار التحكم الثلاثة
         if (['sr_kick', 'sr_add', 'sr_rename'].includes(interaction.customId)) {
             const userId = interaction.user.id;
             const roomData = db.secretRooms.get(userId);
@@ -535,7 +528,6 @@ client.on('interactionCreate', async interaction => {
             await interaction.showModal(modal);
         }
 
-        // تفاعل أزرار قبول/رفض الدعوة في الخاص
         if (interaction.customId.startsWith('accept_sr_') || interaction.customId.startsWith('reject_sr_')) {
             await interaction.deferReply({ ephemeral: true });
             const inviteKey = interaction.customId.replace('accept_sr_', '').replace('reject_sr_', '');
@@ -561,12 +553,10 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // قبول الدعوة
             if (roomData.pending) roomData.pending.delete(userId);
             roomData.members.add(userId);
             db.secretInvites.delete(inviteKey);
 
-            // منح الصلاحية للروم المخفي
             const channel = interaction.guild.channels.cache.get(roomData.channelId);
             if (channel) {
                 await channel.permissionOverwrites.edit(userId, {
@@ -660,7 +650,6 @@ client.on('interactionCreate', async interaction => {
             await interaction.editReply({ content: replyMsg });
         }
 
-        // --- معالجة إنشاء الروم السري ---
         if (interaction.customId === 'modal_create_secret_room') {
             await interaction.deferReply({ ephemeral: true });
             const userId = interaction.user.id;
@@ -693,7 +682,6 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // التحقق من الحد الأقصى (150 شخص كحد أقصى)
             if (targetIds.size > 150) {
                 await interaction.editReply({ content: 'العدد كثير جداً أعلى حد 150 هذا لو أحد بغى يعطيهم.' });
                 return;
@@ -707,14 +695,13 @@ client.on('interactionCreate', async interaction => {
             const ownerMember = interaction.guild.members.cache.get(userId);
             const roomName = `room-${ownerMember.user.username}`;
 
-            // إنشاء الروم المخفي تماماً عن الجميع
             const guild = interaction.guild;
             const secretChannel = await guild.channels.create({
                 name: roomName,
                 type: ChannelType.GuildText,
                 permissionOverwrites: [
                     {
-                        id: guild.id, // @everyone
+                        id: guild.id,
                         deny: [PermissionsBitField.Flags.ViewChannel]
                     },
                     {
@@ -733,8 +720,6 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // إضافة الستريتر/الأدمن ليتمكنوا من رؤيته إن رغبت (حسب طلبك: "ما حد يقدر يشوف ذا الروم إلا الستريتر أو صاحب الروم نفسه")
-            // سنمنح دور الأدمن صلاحية الرؤية أيضاً احتياطياً للأمان الاداري
             if (ADMIN_ROLE_ID) {
                 await secretChannel.permissionOverwrites.edit(ADMIN_ROLE_ID, {
                     ViewChannel: true,
@@ -746,7 +731,6 @@ client.on('interactionCreate', async interaction => {
             const membersSet = new Set([userId]);
             const pendingSet = new Set();
 
-            // جمع أسماء الأشخاص الذين سيتم ذكرهم في الدعوة
             const invitedMentionsList = [];
             invitedMentionsList.push(`<@${userId}>`);
 
@@ -763,8 +747,8 @@ client.on('interactionCreate', async interaction => {
                 pending: pendingSet
             });
 
-            // إرسال الدعوات في الخاص لكل عضو مستهدف
-            const inviteKey = Math.random().toString(36.substring(2, 9));
+            // تم تصحيح الخطأ هنا في توليد مفتاح الدعوة
+            const inviteKey = Math.random().toString(36).substring(2, 9);
             db.secretInvites.set(inviteKey, {
                 ownerId: userId,
                 channelId: secretChannel.id
@@ -787,7 +771,6 @@ client.on('interactionCreate', async interaction => {
             await interaction.editReply({ content: `تم إنشاء الروم السري بنجاح وتم إرسال الدعوات للأشخاص (الحد الأقصى 150). الروم المخفي: <#${secretChannel.id}>` });
         }
 
-        // --- طرد عضو من الروم السري ---
         if (interaction.customId === 'modal_sr_kick') {
             await interaction.deferReply({ ephemeral: true });
             const userId = interaction.user.id;
@@ -843,7 +826,6 @@ client.on('interactionCreate', async interaction => {
             }
         }
 
-        // --- إضافة عضو للروم السري ---
         if (interaction.customId === 'modal_sr_add') {
             await interaction.deferReply({ ephemeral: true });
             const userId = interaction.user.id;
@@ -906,7 +888,6 @@ client.on('interactionCreate', async interaction => {
             await interaction.editReply({ content: 'ثم أضفت الشخص للروم (أرسلت له دعوة في الخاص لينضم).' });
         }
 
-        // --- تعديل اسم الروم السري ---
         if (interaction.customId === 'modal_sr_rename') {
             await interaction.deferReply({ ephemeral: true });
             const userId = interaction.user.id;
