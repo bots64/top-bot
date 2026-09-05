@@ -58,9 +58,10 @@ const db = {
     dailyVoice: new Map(),
     cooldowns: new Map(),
     bannedUsers: new Set(),
-    secretRooms: new Map(), // ownerId -> { channelId, members, pending }
-    channelToOwner: new Map(), // channelId -> ownerId
-    secretInvites: new Map()
+    secretRooms: new Map(), 
+    channelToOwner: new Map(), 
+    secretInvites: new Map(),
+    panelCooldowns: new Map()
 };
 
 function getTodayDateString() {
@@ -374,7 +375,7 @@ async function setupSecretRoomPanels() {
             const row1 = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('sr_kick').setLabel('Kick Member').setStyle(ButtonStyle.Secondary),
                 new ButtonBuilder().setCustomId('sr_add').setLabel('Invite Member').setStyle(ButtonStyle.Secondary),
-                new ButtonBuilder().setCustomId('sr_rename').setLabel('Edit Role').setStyle(ButtonStyle.Secondary)
+                new ButtonBuilder().setCustomId('sr_rename').setLabel('Name Room').setStyle(ButtonStyle.Secondary)
             );
 
             const row2 = new ActionRowBuilder().addComponents(
@@ -402,6 +403,20 @@ function getTopVoiceText() {
 
 client.on('interactionCreate', async interaction => {
     if (interaction.isButton()) {
+        if (['sr_kick', 'sr_add', 'sr_rename', 'sr_delete'].includes(interaction.customId)) {
+            const userId = interaction.user.id;
+            const now = Date.now();
+            const panelCooldown = 5 * 60 * 1000;
+            const lastPanelTime = db.panelCooldowns.get(userId) || 0;
+
+            if (now - lastPanelTime < panelCooldown) {
+                const remainingTime = Math.ceil(((lastPanelTime + panelCooldown) - now) / 1000);
+                await interaction.reply({ content: `يجب عليك الانتظار ${Math.floor(remainingTime / 60)} دقيقة لاستخدام هذه الأزرار مرة أخرى.`, ephemeral: true });
+                return;
+            }
+            db.panelCooldowns.set(userId, now);
+        }
+
         if (interaction.customId === 'my_stats_txt') {
             await interaction.deferReply({ ephemeral: true });
             checkDailyReset();
@@ -496,7 +511,6 @@ client.on('interactionCreate', async interaction => {
         if (['sr_kick', 'sr_add', 'sr_rename', 'sr_delete'].includes(interaction.customId)) {
             const userId = interaction.user.id;
             
-            // التحقق أن الشخص الذي الضغط موجود في أي روم سري كعضو
             let activeRoomData = null;
             let activeOwnerId = null;
             
@@ -530,18 +544,18 @@ client.on('interactionCreate', async interaction => {
                 modal.setCustomId('modal_sr_kick').setTitle('طرد عضو');
                 const tInput = new TextInputBuilder()
                     .setCustomId('kick_target')
-                    .setLabel('اكتب يوزر الشخص أو الأشخاص المراد طردهم أو آيديهم')
+                    .setLabel('اكتب يوزر العضو المراد طرده')
                     .setStyle(TextInputStyle.Short)
-                    .setPlaceholder('اكتب يوزر أو آيدي')
+                    .setPlaceholder('اكتب يوزر أو آيدي العضو')
                     .setRequired(true);
                 modal.addComponents(new ActionRowBuilder().addComponents(tInput));
             } else if (interaction.customId === 'sr_add') {
                 modal.setCustomId('modal_sr_add').setTitle('إضافة عضو');
                 const tInput = new TextInputBuilder()
                     .setCustomId('add_target')
-                    .setLabel('اكتب يوزر أو يوزرات الأشخاص المراد إضافتهم')
+                    .setLabel('اكتب يوزر الشخص المراد دعوته')
                     .setStyle(TextInputStyle.Short)
-                    .setPlaceholder('اكتب يوزرهم ولا تتردد')
+                    .setPlaceholder('اكتب يوزر العضو')
                     .setRequired(true);
                 modal.addComponents(new ActionRowBuilder().addComponents(tInput));
             } else if (interaction.customId === 'sr_rename') {
@@ -550,7 +564,7 @@ client.on('interactionCreate', async interaction => {
                     .setCustomId('new_name')
                     .setLabel('اكتب الاسم الجديد للروم')
                     .setStyle(TextInputStyle.Short)
-                    .setPlaceholder('اكتب الاسم الجديد فقط بدون إضافات')
+                    .setPlaceholder('اكتب الاسم الجديد')
                     .setRequired(true);
                 modal.addComponents(new ActionRowBuilder().addComponents(tInput));
             }
@@ -596,7 +610,7 @@ client.on('interactionCreate', async interaction => {
                 }).catch(() => {});
             }
 
-            await interaction.editReply({ content: 'تم انضمامك للروم السري' });
+            await interaction.editReply({ content: 'تم إضافتك للروم السري ومعي وإلى آخره.' });
         }
 
     } else if (interaction.isModalSubmit()) {
@@ -721,6 +735,18 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
+            let userInAnotherRoom = false;
+            for (const [, data] of db.secretRooms.entries()) {
+                if (data.members.has(userId)) {
+                    userInAnotherRoom = true;
+                    break;
+                }
+            }
+            if (userInAnotherRoom) {
+                await interaction.editReply({ content: 'أنت بالفعل موجود في روم سري آخر.' });
+                return;
+            }
+
             let selectedCategoryId = ROOM_CATEGORIES[0];
             const guild = interaction.guild;
             
@@ -771,12 +797,27 @@ client.on('interactionCreate', async interaction => {
                 }).catch(() => {});
             }
 
+            // إرسال الرسالة الترحيبية داخل الروم السري الجديد مرة واحدة فقط
+            await secretChannel.send('حياكم الله سولفو وكل شي بسريه واعترفو باسراركم كل شي ببير').catch(() => {});
+
             const membersSet = new Set([userId]);
             const pendingSet = new Set();
             const invitedMentionsList = [`<@${userId}>`];
             const validSentUsers = [];
 
             for (const tId of targetIds) {
+                let inOtherRoom = false;
+                for (const [, data] of db.secretRooms.entries()) {
+                    if (data.members.has(tId)) {
+                        inOtherRoom = true;
+                        break;
+                    }
+                }
+
+                if (inOtherRoom) {
+                    continue;
+                }
+
                 const mem = guild.members.cache.get(tId);
                 if (!mem) continue;
                 pendingSet.add(tId);
@@ -799,7 +840,6 @@ client.on('interactionCreate', async interaction => {
 
             const inviteText = `لديك دعوة من شخص\nللانضمام للروم السري مع (${invitedMentionsList.join(', ')})`;
 
-            // الأزرار باللون الرمادي (Secondary)
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId(`accept_sr_${inviteKey}`).setLabel('قبول').setStyle(ButtonStyle.Secondary),
                 new ButtonBuilder().setCustomId(`reject_sr_${inviteKey}`).setLabel('رفض').setStyle(ButtonStyle.Secondary)
@@ -814,7 +854,7 @@ client.on('interactionCreate', async interaction => {
 
             let replyMsg = `تم إنشاء الروم السري بنجاح الروم المخفي: <#${secretChannel.id}>`;
             if (invalidNamesCount > 0) {
-                replyMsg += ` (تم الإرسال لمن تم العثور عليهم وتم تجاهل اليوزرات غير الصحيحة)`;
+                replyMsg += ` (تم الإرسال لمن تم العثور عليهم وتجاهل اليوزرات غير الصحيحة)`;
             }
 
             await interaction.editReply({ content: replyMsg });
@@ -825,9 +865,11 @@ client.on('interactionCreate', async interaction => {
             const userId = interaction.user.id;
             
             let activeRoomData = null;
-            for (const [, data] of db.secretRooms.entries()) {
-                if (data.members.has(userId)) {
+            let activeOwnerId = null;
+            for (const [ownerId, data] of db.secretRooms.entries()) {
+                if (data.members.has(userId) || ownerId === userId) {
                     activeRoomData = data;
+                    activeOwnerId = ownerId;
                     break;
                 }
             }
@@ -863,12 +905,13 @@ client.on('interactionCreate', async interaction => {
 
             const secretChannel = interaction.guild.channels.cache.get(activeRoomData.channelId);
             let kickedAny = false;
+            let kickedTargetId = null;
 
             for (const tId of targetIds) {
-                if (activeRoomData.members.has(tId) || activeRoomData.pending.has(tId)) {
+                if (tId !== activeOwnerId && activeRoomData.members.has(tId)) {
                     activeRoomData.members.delete(tId);
-                    activeRoomData.pending.delete(tId);
                     kickedAny = true;
+                    kickedTargetId = tId;
 
                     if (secretChannel) {
                         await secretChannel.permissionOverwrites.delete(tId).catch(() => {});
@@ -877,9 +920,17 @@ client.on('interactionCreate', async interaction => {
             }
 
             if (kickedAny) {
-                await interaction.editReply({ content: 'تم طرده ويصير هذاك الشخص ما عاد يقدر يشوف الروم، ولا يقدر يسوي في الروم شيء.' });
+                const kickerMember = interaction.guild.members.cache.get(userId);
+                const kickerName = kickerMember ? kickerMember.user.username : 'الشخص';
+                
+                const targetMem = interaction.guild.members.cache.get(kickedTargetId);
+                if (targetMem) {
+                    await targetMem.send(`تم طرده من الروم السري من قبل (${kickerName})`).catch(() => {});
+                }
+
+                await interaction.editReply({ content: 'تم طرده ويصير هذاك الشخص ما عاد يقدر يشوف الشات.' });
             } else {
-                await interaction.editReply({ content: 'هذا الشخص ليس بالروم أو ليس بالسيرفر' });
+                await interaction.editReply({ content: 'هذا الشخص ليس في رومك السري' });
             }
         }
 
@@ -890,7 +941,7 @@ client.on('interactionCreate', async interaction => {
             let activeRoomData = null;
             let activeOwnerId = null;
             for (const [ownerId, data] of db.secretRooms.entries()) {
-                if (data.members.has(userId)) {
+                if (data.members.has(userId) || ownerId === userId) {
                     activeRoomData = data;
                     activeOwnerId = ownerId;
                     break;
@@ -907,7 +958,6 @@ client.on('interactionCreate', async interaction => {
             }
 
             const members = await interaction.guild.members.fetch().catch(() => null);
-            let invalidCount = 0;
             if (members) {
                 const tokens = rawInput.split(/\s+/);
                 for (const token of tokens) {
@@ -920,14 +970,12 @@ client.on('interactionCreate', async interaction => {
                     );
                     if (found) {
                         targetIds.add(found.id);
-                    } else if (!token.match(/^<@!?\d+>$/) && !token.match(/^\d{17,19}$/)) {
-                        invalidCount++;
                     }
                 }
             }
 
             if (targetIds.size === 0) {
-                await interaction.editReply({ content: 'المنشن أو اليوزر غير صحيح أو ليس في السيرفر.' });
+                await interaction.editReply({ content: 'اليوزر غير صحيح أو ليس في السيرفر.' });
                 return;
             }
 
@@ -935,7 +983,22 @@ client.on('interactionCreate', async interaction => {
             const secretChannel = guild.channels.cache.get(activeRoomData.channelId);
 
             let sentSuccessCount = 0;
+            let inAnotherRoomCount = 0;
+
             for (const tId of targetIds) {
+                let inOtherRoom = false;
+                for (const [, data] of db.secretRooms.entries()) {
+                    if (data.members.has(tId)) {
+                        inOtherRoom = true;
+                        break;
+                    }
+                }
+
+                if (inOtherRoom) {
+                    inAnotherRoomCount++;
+                    continue;
+                }
+
                 activeRoomData.pending.add(tId);
                 const inviteKey = Math.random().toString(36).substring(2, 9);
                 db.secretInvites.set(inviteKey, {
@@ -954,9 +1017,9 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            let replyMsg = `تم إرسال الدعوة لليوزر الصحيح`;
-            if (invalidCount > 0) {
-                replyMsg += ` (تم إرسال الدعوة لليوزر الصح وتجاهل اليوزر الخطأ لعدم صحته)`;
+            let replyMsg = `تم إرسال الدعوة بنجاح`;
+            if (inAnotherRoomCount > 0) {
+                replyMsg = `هذا الشخص في روم ثاني.`;
             }
 
             await interaction.editReply({ content: replyMsg });
@@ -967,8 +1030,8 @@ client.on('interactionCreate', async interaction => {
             const userId = interaction.user.id;
             
             let activeRoomData = null;
-            for (const [, data] of db.secretRooms.entries()) {
-                if (data.members.has(userId)) {
+            for (const [ownerId, data] of db.secretRooms.entries()) {
+                if (data.members.has(userId) || ownerId === userId) {
                     activeRoomData = data;
                     break;
                 }
@@ -986,7 +1049,7 @@ client.on('interactionCreate', async interaction => {
                 await secretChannel.setName(newName).catch(() => {});
             }
 
-            await interaction.editReply({ content: `تم تعديل اسم الروم بنجاح إلى: **${newName}**` });
+            await interaction.editReply({ content: `تم تعديل اسم الروم إلى ${newName}` });
         }
     }
 });
