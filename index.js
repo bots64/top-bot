@@ -41,6 +41,10 @@ const ANON_CHANNEL_ID = '1543113579962835054';
 const SECRET_ROOM_PANEL_ID = '1545231229312573450';
 const SECRET_ROOM_CONTROL_ID = '1545233055969443901';
 
+// الرومات الجديدة المطلوبة للتحديثات
+const ANONYMOUS_RELAY_ROOM_1 = '1545813921167056916';
+const ANONYMOUS_RELAY_ROOM_2 = '1545814129963442277';
+
 const EXCLUDED_ROLE_ID = '1535875661997277194';
 const ADMIN_ROLE_ID = '1544487320357572629';
 const ROOM_DELETE_BY_ROLE_ID = '1545809119980560586';
@@ -84,13 +88,9 @@ function checkDailyReset() {
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
     await updateLeaderboards();
-    await setupSecretRoomPanels();
+    await setupSecretRoomPanelsOnce(); // تُرسل مرة واحدة فقط ولا تتكرر كل 5 دقائق
     
     setInterval(updateLeaderboards, 30000);
-
-    setInterval(async () => {
-        await setupSecretRoomPanels();
-    }, 5 * 60 * 1000);
 });
 
 function isExcluded(member) {
@@ -104,17 +104,43 @@ function isExcluded(member) {
 client.on('messageCreate', async message => {
     if (message.author.bot || !message.guild) return;
 
+    const channelId = message.channel.id;
+
+    // نظام الروم الأول (بدون إظهار يوزر أو شخصية)
+    if (channelId === ANONYMOUS_RELAY_ROOM_1) {
+        const content = message.content;
+        await message.delete().catch(() => {});
+        const embed = new EmbedBuilder()
+            .setColor('#1e1f22')
+            .setDescription(content);
+        await message.channel.send({ embeds: [embed] });
+        return;
+    }
+
+    // نظام الروم الثاني (مع إظهار يوزر الشخص فوق يسار في الـ Embed)
+    if (channelId === ANONYMOUS_RELAY_ROOM_2) {
+        const content = message.content;
+        const authorName = message.member.displayName || message.author.username;
+        const authorAvatar = message.author.displayAvatarURL({ dynamic: true });
+
+        await message.delete().catch(() => {});
+        const embed = new EmbedBuilder()
+            .setColor('#1e1f22')
+            .setAuthor({ name: authorName, iconURL: authorAvatar })
+            .setDescription(content);
+        await message.channel.send({ embeds: [embed] });
+        return;
+    }
+
     checkDailyReset();
     const content = message.content.trim();
 
     // التحقق من أمر حذف الروم السري عبر الكتابة في الروم
     if (content === 'حذف الروم السري') {
-        const channelId = message.channel.id;
         const ownerId = db.channelToOwner.get(channelId);
         let activeRoomData = ownerId ? db.secretRooms.get(ownerId) : null;
         let foundOwnerId = ownerId;
 
-        // في حال تم كتابة الأمر في روم فرعي ولكن لم يتم العثور عليه عبر channelToOwner مباشرة، نبحث عنه بالدخل
         if (!activeRoomData) {
             for (const [oId, data] of db.secretRooms.entries()) {
                 if (data.channelId === channelId) {
@@ -132,7 +158,6 @@ client.on('messageCreate', async message => {
                 const deleterName = message.member.displayName || message.author.username;
                 const membersToNotify = [...activeRoomData.members];
 
-                // إرسال رسالة بالخاص لجميع الأعضاء الذين قبلوا الدعوة وصاروا يشاهدون الروم
                 for (const mId of membersToNotify) {
                     const memberObj = message.guild.members.cache.get(mId);
                     if (memberObj) {
@@ -381,57 +406,52 @@ async function updateLeaderboards() {
     }
 }
 
-async function setupSecretRoomPanels() {
+// إعداد بنرات اللوحة مرة واحدة فقط بدون تكرار كل 5 دقائق
+async function setupSecretRoomPanelsOnce() {
     try {
         const panelChannel = await client.channels.fetch(SECRET_ROOM_PANEL_ID).catch(() => null);
         if (panelChannel) {
             const messages = await panelChannel.messages.fetch({ limit: 20 }).catch(() => null);
-            if (messages) {
-                const botMessages = messages.filter(m => m.author.id === client.user.id);
-                for (const [, msg] of botMessages) {
-                    await msg.delete().catch(() => {});
-                }
-            }
+            let hasPanel = messages && messages.some(m => m.author.id === client.user.id);
             
-            const embed = new EmbedBuilder()
-                .setColor('#1e1f22')
-                .setDescription('سو رومك مع من تحب');
+            if (!hasPanel) {
+                const embed = new EmbedBuilder()
+                    .setColor('#1e1f22')
+                    .setDescription('سو رومك مع من تحب');
 
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('create_secret_room_btn').setLabel('انشاء روم').setStyle(ButtonStyle.Secondary)
-            );
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('create_secret_room_btn').setLabel('انشاء روم').setStyle(ButtonStyle.Secondary)
+                );
 
-            await panelChannel.send({ embeds: [embed], components: [row] });
+                await panelChannel.send({ embeds: [embed], components: [row] });
+            }
         }
 
         const controlChannel = await client.channels.fetch(SECRET_ROOM_CONTROL_ID).catch(() => null);
         if (controlChannel) {
             const messages = await controlChannel.messages.fetch({ limit: 20 }).catch(() => null);
-            if (messages) {
-                const botMessages = messages.filter(m => m.author.id === client.user.id);
-                for (const [, msg] of botMessages) {
-                    await msg.delete().catch(() => {});
-                }
-            }
+            let hasControl = messages && messages.some(m => m.author.id === client.user.id);
             
-            const embed = new EmbedBuilder()
-                .setColor('#1e1f22')
-                .setTitle('Choose a leader action');
+            if (!hasControl) {
+                const embed = new EmbedBuilder()
+                    .setColor('#1e1f22')
+                    .setTitle('Choose a leader action');
 
-            const row1 = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('sr_kick').setLabel('Kick Member').setStyle(ButtonStyle.Secondary),
-                new ButtonBuilder().setCustomId('sr_add').setLabel('Invite Member').setStyle(ButtonStyle.Secondary),
-                new ButtonBuilder().setCustomId('sr_rename').setLabel('Name Room').setStyle(ButtonStyle.Secondary)
-            );
+                const row1 = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('sr_kick').setLabel('Kick Member').setStyle(ButtonStyle.Secondary),
+                    new ButtonBuilder().setCustomId('sr_add').setLabel('Invite Member').setStyle(ButtonStyle.Secondary),
+                    new ButtonBuilder().setCustomId('sr_rename').setLabel('Name Room').setStyle(ButtonStyle.Secondary)
+                );
 
-            const row2 = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('sr_delete').setLabel('Delete Room').setStyle(ButtonStyle.Secondary)
-            );
+                const row2 = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('sr_delete').setLabel('Delete Room').setStyle(ButtonStyle.Secondary)
+                );
 
-            await controlChannel.send({ embeds: [embed], components: [row1, row2] });
+                await controlChannel.send({ embeds: [embed], components: [row1, row2] });
+            }
         }
     } catch (err) {
-        console.error('Error setupSecretRoomPanels:', err);
+        console.error('Error setupSecretRoomPanelsOnce:', err);
     }
 }
 
@@ -541,7 +561,6 @@ client.on('interactionCreate', async interaction => {
         if (interaction.customId === 'create_secret_room_btn') {
             const userId = interaction.user.id;
 
-            // التحقق عما إذا كان المستخدم لديه روم سري بالفعل أو أنه موجود داخل روم سري كعضو
             let hasActiveRoom = false;
             for (const [ownerId, data] of db.secretRooms.entries()) {
                 if (ownerId === userId || data.members.has(userId)) {
@@ -655,7 +674,6 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // التحقق من انتهاء مدة 36 ساعة بالضبط (36 * 60 * 60 * 1000 ميلي ثانية)
             const thirtySixHours = 36 * 60 * 60 * 1000;
             if (Date.now() - inviteInfo.timestamp > thirtySixHours) {
                 db.secretInvites.delete(inviteKey);
@@ -684,7 +702,6 @@ client.on('interactionCreate', async interaction => {
 
             const channel = interaction.guild.channels.cache.get(roomData.channelId);
             if (channel) {
-                // منح الصلاحيات لمن يضغط قبول فقط ليتمكن من رؤية الروم
                 await channel.permissionOverwrites.edit(userId, {
                     ViewChannel: true,
                     SendMessages: true,
@@ -780,7 +797,6 @@ client.on('interactionCreate', async interaction => {
             await interaction.deferReply({ ephemeral: true });
             const userId = interaction.user.id;
             
-            // تحقق مزدوج من عدم وجود روم سري مسبقاً لدى المنشئ
             let userInAnotherRoom = false;
             for (const [ownerId, data] of db.secretRooms.entries()) {
                 if (ownerId === userId || data.members.has(userId)) {
@@ -847,7 +863,6 @@ client.on('interactionCreate', async interaction => {
             const ownerMember = interaction.guild.members.cache.get(userId);
             const roomName = `room-${ownerMember.user.username}`;
 
-            // إنشاء الروم مع إخفائه افتراضياً بحيث لا يراه إلا صاحب الروم ومن يضغط قبول لاحقاً
             const secretChannel = await guild.channels.create({
                 name: roomName,
                 type: ChannelType.GuildText,
@@ -881,7 +896,6 @@ client.on('interactionCreate', async interaction => {
                 }).catch(() => {});
             }
 
-            // إرسال الرسالة الترحيبية داخل الروم السري الجديد مرة واحدة فقط
             await secretChannel.send('حياكم الله سولفو وكل شي بسريه واعترفو باسراركم كل شي ببير').catch(() => {});
 
             const membersSet = new Set([userId]);
@@ -917,7 +931,6 @@ client.on('interactionCreate', async interaction => {
             db.channelToOwner.set(secretChannel.id, userId);
 
             const inviteKey = Math.random().toString(36).substring(2, 9);
-            // حفظ وقت إنشاء الدعوة للتحقق من انتهاء الصلاحية بعد 36 ساعة بالضبط
             db.secretInvites.set(inviteKey, {
                 ownerId: userId,
                 channelId: secretChannel.id,
