@@ -21,7 +21,9 @@ const {
     TextInputBuilder, 
     TextInputStyle,
     ChannelType,
-    PermissionsBitField 
+    PermissionsBitField,
+    Partials,
+    PermissionFlagsBits
 } = require('discord.js');
 
 const client = new Client({
@@ -30,9 +32,14 @@ const client = new Client({
         GatewayIntentBits.GuildVoiceStates,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMembers
-    ]
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.DirectMessages
+    ],
+    partials: [Partials.Channel, Partials.Message, Partials.GuildMember]
 });
+
+// أيدي السيرفر المسموح بتشغيل الأوامر فيه حصرياً
+const ALLOWED_GUILD_ID = '1545845474353881180';
 
 const TXT_CHANNEL_ID = '1543093337165144084';
 const VC_CHANNEL_ID = '1543093370065260564';
@@ -41,13 +48,27 @@ const ANON_CHANNEL_ID = '1543113579962835054';
 const SECRET_ROOM_PANEL_ID = '1545231229312573450';
 const SECRET_ROOM_CONTROL_ID = '1545233055969443901';
 
-// الرومات الجديدة المطلوبة للتحديثات
 const ANONYMOUS_RELAY_ROOM_1 = '1545813921167056916';
 const ANONYMOUS_RELAY_ROOM_2 = '1545814129963442277';
 
 const EXCLUDED_ROLE_ID = '1535875661997277194';
 const ADMIN_ROLE_ID = '1544487320357572629';
 const ROOM_DELETE_BY_ROLE_ID = '1545809119980560586';
+
+const CONFIG = {
+    verificationRoom: "1545846837192429578",
+    verifiedRole: "1545848708921425920",
+    unverifiedRole: "1545848907156820100",
+    
+    ticketSetupRoom: "1545847197768360000",
+    ticketCategory1: "1545852986188628108",
+    ticketCategory2: "1545853004673196172",
+    archiveCategory: "1545854950456696923",
+    deleteCategory: "1545855025082011760",
+    
+    supportRole: "1545853407825231962",
+    adminControlRole: "1545853891101466746"
+};
 
 const ROOM_CATEGORIES = [
     '1544964067876278272',
@@ -88,7 +109,7 @@ function checkDailyReset() {
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
     await updateLeaderboards();
-    await setupSecretRoomPanelsOnce(); // تُرسل مرة واحدة فقط ولا تتكرر كل 5 دقائق
+    await setupSecretRoomPanelsOnce(); 
     
     setInterval(updateLeaderboards, 30000);
 });
@@ -101,12 +122,25 @@ function isExcluded(member) {
     return false;
 }
 
+client.on('guildMemberAdd', async (member) => {
+    try {
+        if (member.guild.id !== ALLOWED_GUILD_ID) return;
+        if (CONFIG.unverifiedRole) {
+            await member.roles.add(CONFIG.unverifiedRole);
+        }
+    } catch (err) {
+        console.error("Error adding join role:", err);
+    }
+});
+
 client.on('messageCreate', async message => {
     if (message.author.bot || !message.guild) return;
+    
+    // التحقق من أن السيرفر هو السيرفر المسموح به حصرياً
+    if (message.guild.id !== ALLOWED_GUILD_ID) return;
 
     const channelId = message.channel.id;
 
-    // نظام الروم الأول (بدون إظهار يوزر أو شخصية)
     if (channelId === ANONYMOUS_RELAY_ROOM_1) {
         const content = message.content;
         await message.delete().catch(() => {});
@@ -117,7 +151,6 @@ client.on('messageCreate', async message => {
         return;
     }
 
-    // نظام الروم الثاني (مع إظهار يوزر الشخص فوق يسار في الـ Embed)
     if (channelId === ANONYMOUS_RELAY_ROOM_2) {
         const content = message.content;
         const authorName = message.member.displayName || message.author.username;
@@ -135,7 +168,156 @@ client.on('messageCreate', async message => {
     checkDailyReset();
     const content = message.content.trim();
 
-    // التحقق من أمر حذف الروم السري عبر الكتابة في الروم
+    if (content === '!setup_verify' && message.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        const channel = message.guild.channels.cache.get(CONFIG.verificationRoom);
+        if (channel) {
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId('verify_btn')
+                    .setLabel('تفعيل')
+                    .setStyle(ButtonStyle.Secondary)
+            );
+            await channel.send({
+                content: "تنويه حنا مجرد سيرفر للفضايح ولا نمس للابتزاز بآي صلة",
+                components: [row]
+            });
+            await message.reply("تم إرسال رسالة التفعيل بنجاح!");
+        }
+        return;
+    }
+
+    if (content === '!setup_ticket' && message.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        const channel = message.guild.channels.cache.get(CONFIG.ticketSetupRoom);
+        if (channel) {
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId('create_ticket_btn')
+                    .setLabel('فك تكت')
+                    .setStyle(ButtonStyle.Primary)
+            );
+            await channel.send({
+                content: "اذا خاطرك بالمخفي بس ما معك بوست او عندك اي مشكله اضغط تحت",
+                components: [row]
+            });
+            await message.reply("تم إرسال زر التكت بنجاح!");
+        }
+        return;
+    }
+
+    if (content.startsWith("قفل")) {
+        if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return;
+        await message.channel.messages.fetch({ limit: 100 }).then(msgs => message.channel.bulkDelete(msgs, true));
+        await message.channel.permissionOverwrites.edit(message.guild.id, { SendMessages: false, AddReactions: false });
+        return;
+    }
+
+    if (content.startsWith("فتح")) {
+        if (!message.member.permissions.has(PermissionFlagsBits.ManageChannels)) return;
+        try { await message.delete(); } catch(e) {}
+        await message.channel.permissionOverwrites.edit(message.guild.id, { SendMessages: null, AddReactions: null });
+        return;
+    }
+
+    if (content.startsWith("مسح")) {
+        if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return;
+        const args = content.split(" ");
+        const count = parseInt(args[1]);
+        try { await message.delete(); } catch(e) {}
+        if (!isNaN(count)) {
+            let fetched = await message.channel.messages.fetch({ limit: Math.min(count, 100) });
+            await message.channel.bulkDelete(fetched, true);
+        } else {
+            let fetched = await message.channel.messages.fetch({ limit: 100 });
+            await message.channel.bulkDelete(fetched, true);
+        }
+        return;
+    }
+
+    if (content.startsWith("/send")) {
+        if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return;
+        const textToSend = content.slice(5).trim();
+        const attachments = Array.from(message.attachments.values());
+        
+        try { await message.delete(); } catch(e) {}
+
+        if (textToSend || attachments.length > 0) {
+            await message.channel.send({
+                content: textToSend || undefined,
+                files: attachments.map(att => att.url)
+            });
+        }
+        return;
+    }
+
+    if (content.startsWith("bc")) {
+        if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) return;
+        const broadcastContent = content.slice(2).trim();
+        const attachments = Array.from(message.attachments.values());
+        
+        const members = await message.guild.members.fetch();
+        let successCount = 0;
+
+        for (const [id, member] of members) {
+            if (member.user.bot) continue;
+            try {
+                await member.send({
+                    content: broadcastContent || undefined,
+                    files: attachments.map(att => att.url)
+                });
+                successCount++;
+            } catch (err) {}
+        }
+
+        await message.reply(`تم الإرسال إلى جميع الناس الذي بالسيرفر (${successCount})`);
+        return;
+    }
+
+    if (message.channel.parentId === CONFIG.archiveCategory || message.channel.name.startsWith("ticket-") || message.channel.name.startsWith("delete-")) {
+        const channelName = message.channel.name;
+
+        if (content === "إغلاق") {
+            if (message.channel.parentId === CONFIG.ticketCategory1 || message.channel.parentId === CONFIG.ticketCategory2) {
+                const originalUserTag = channelName.replace("ticket-", "");
+                await message.channel.setParent(CONFIG.archiveCategory);
+                await message.channel.setName(`delete-${originalUserTag}`);
+                await message.channel.permissionOverwrites.set([
+                    { id: message.guild.id, Deny: [PermissionFlagsBits.ViewChannel] },
+                    { id: CONFIG.supportRole, Allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+                ]);
+                await message.reply("تم إغلاق التكت مؤقتاً ونقله للأرشيف.");
+            }
+        }
+
+        if (content === "فتح") {
+            if (message.channel.parentId === CONFIG.archiveCategory) {
+                const originalUserTag = channelName.replace("delete-", "");
+                const member = message.guild.members.cache.find(m => m.user.username.toLowerCase() === originalUserTag.toLowerCase() || m.id === originalUserTag);
+                
+                const cat1 = message.guild.channels.cache.get(CONFIG.ticketCategory1);
+                const targetCat = (cat1 && cat1.children.cache.size < 50) ? CONFIG.ticketCategory1 : CONFIG.ticketCategory2;
+
+                await message.channel.setParent(targetCat);
+                await message.channel.setName(`ticket-${originalUserTag}`);
+                
+                if (member) {
+                    await message.channel.permissionOverwrites.set([
+                        { id: message.guild.id, Deny: [PermissionFlagsBits.ViewChannel] },
+                        { id: member.id, Allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+                        { id: CONFIG.supportRole, Allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+                    ]);
+                }
+                await message.channel.send("كأن التكت جديد، تم إعادة فتحه وتفعيل الصلاحيات.");
+            }
+        }
+
+        if (content === "delete") {
+            if (message.member.roles.cache.has(CONFIG.adminControlRole)) {
+                await message.channel.send("جاري حذف الروم نهائياً...");
+                setTimeout(() => message.channel.delete(), 3000);
+            }
+        }
+    }
+
     if (content === 'حذف الروم السري') {
         const ownerId = db.channelToOwner.get(channelId);
         let activeRoomData = ownerId ? db.secretRooms.get(ownerId) : null;
@@ -292,6 +474,9 @@ client.on('messageCreate', async message => {
 const voiceTimers = new Map();
 
 client.on('voiceStateUpdate', (oldState, newState) => {
+    const guildId = newState.guild.id || oldState.guild.id;
+    if (guildId !== ALLOWED_GUILD_ID) return;
+
     const member = newState.member || oldState.member;
     if (!member || isExcluded(member)) return;
 
@@ -327,7 +512,10 @@ setInterval(() => {
 
 async function updateLeaderboards() {
     try {
-        const txtChannel = await client.channels.fetch(TXT_CHANNEL_ID).catch(() => null);
+        const guild = client.guilds.cache.get(ALLOWED_GUILD_ID);
+        if (!guild) return;
+
+        const txtChannel = await guild.channels.fetch(TXT_CHANNEL_ID).catch(() => null);
         if (txtChannel) {
             const embed = new EmbedBuilder()
                 .setTitle('Top Messages')
@@ -355,7 +543,7 @@ async function updateLeaderboards() {
             }
         }
 
-        const vcChannel = await client.channels.fetch(VC_CHANNEL_ID).catch(() => null);
+        const vcChannel = await guild.channels.fetch(VC_CHANNEL_ID).catch(() => null);
         if (vcChannel) {
             const embed = new EmbedBuilder()
                 .setTitle('Top Voice')
@@ -379,7 +567,7 @@ async function updateLeaderboards() {
             }
         }
 
-        const anonChannel = await client.channels.fetch(ANON_CHANNEL_ID).catch(() => null);
+        const anonChannel = await guild.channels.fetch(ANON_CHANNEL_ID).catch(() => null);
         if (anonChannel) {
             const messages = await anonChannel.messages.fetch({ limit: 10 }).catch(() => null);
             const botMessage = messages ? messages.find(m => m.author.id === client.user.id) : null;
@@ -406,10 +594,12 @@ async function updateLeaderboards() {
     }
 }
 
-// إعداد بنرات اللوحة مرة واحدة فقط بدون تكرار كل 5 دقائق
 async function setupSecretRoomPanelsOnce() {
     try {
-        const panelChannel = await client.channels.fetch(SECRET_ROOM_PANEL_ID).catch(() => null);
+        const guild = client.guilds.cache.get(ALLOWED_GUILD_ID);
+        if (!guild) return;
+
+        const panelChannel = await guild.channels.fetch(SECRET_ROOM_PANEL_ID).catch(() => null);
         if (panelChannel) {
             const messages = await panelChannel.messages.fetch({ limit: 20 }).catch(() => null);
             let hasPanel = messages && messages.some(m => m.author.id === client.user.id);
@@ -427,7 +617,7 @@ async function setupSecretRoomPanelsOnce() {
             }
         }
 
-        const controlChannel = await client.channels.fetch(SECRET_ROOM_CONTROL_ID).catch(() => null);
+        const controlChannel = await guild.channels.fetch(SECRET_ROOM_CONTROL_ID).catch(() => null);
         if (controlChannel) {
             const messages = await controlChannel.messages.fetch({ limit: 20 }).catch(() => null);
             let hasControl = messages && messages.some(m => m.author.id === client.user.id);
@@ -468,7 +658,70 @@ function getTopVoiceText() {
 }
 
 client.on('interactionCreate', async interaction => {
+    if (!interaction.guild || interaction.guild.id !== ALLOWED_GUILD_ID) {
+        if (interaction.isRepliable()) {
+            await interaction.reply({ content: 'هذا الباب مخصص للسيرفر الأساسي فقط.', ephemeral: true }).catch(() => {});
+        }
+        return;
+    }
+
     if (interaction.isButton()) {
+        if (interaction.customId === 'verify_btn') {
+            const member = interaction.member;
+            try {
+                if (CONFIG.verifiedRole) await member.roles.add(CONFIG.verifiedRole);
+                if (CONFIG.unverifiedRole) await member.roles.remove(CONFIG.unverifiedRole);
+                await interaction.reply({ content: "تم تفعيلك بنجاح وإزالة رول الانتظار!", ephemeral: true });
+            } catch (err) {
+                await interaction.reply({ content: "حدث خطأ أثناء منح الرول.", ephemeral: true });
+            }
+            return;
+        }
+
+        if (interaction.customId === 'create_ticket_btn') {
+            const guild = interaction.guild;
+            const user = interaction.user;
+
+            const cat1 = guild.channels.cache.get(CONFIG.ticketCategory1);
+            let chosenCategory = CONFIG.ticketCategory1;
+
+            if (cat1 && cat1.children.cache.size >= 50) {
+                chosenCategory = CONFIG.ticketCategory2;
+            }
+
+            try {
+                const ticketChannel = await guild.channels.create({
+                    name: `ticket-${user.username}`,
+                    type: ChannelType.GuildText,
+                    parent: chosenCategory,
+                    permissionOverwrites: [
+                        {
+                            id: guild.id,
+                            Deny: [PermissionFlagsBits.ViewChannel]
+                        },
+                        {
+                            id: user.id,
+                            Allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+                        },
+                        {
+                            id: CONFIG.supportRole,
+                            Allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+                        }
+                    ]
+                });
+
+                await ticketChannel.send({
+                    content: `<@&${CONFIG.supportRole}> <@&${CONFIG.adminControlRole}>\n\n**اكتب مشكلتك قبل نجي**`
+                });
+
+                await interaction.reply({ content: `تم إنشاء التكت بنجاح: ${ticketChannel}`, ephemeral: true });
+            } catch (err) {
+                console.error(err);
+                await interaction.reply({ content: "حدث خطأ أثناء إنشاء التكت.", ephemeral: true });
+            }
+            return;
+        }
+
         if (['sr_kick', 'sr_add', 'sr_rename', 'sr_delete'].includes(interaction.customId)) {
             const userId = interaction.user.id;
             const now = Date.now();
@@ -1154,4 +1407,4 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-client.login(process.env.TOKEN);
+client.login(process.env.DISCORD_TOKEN);
